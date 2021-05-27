@@ -11,6 +11,7 @@ setup(
     description='Load a Simplifier package into a FHIR server, quickly.',
     install_requires=[
         "requests",
-        "rich"
+        "rich",
+        "inquirer"
     ]
 )
