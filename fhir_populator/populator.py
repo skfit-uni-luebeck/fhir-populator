@@ -1,7 +1,6 @@
 import sys
 import tempfile
-import time
-from typing import List, TextIO, Optional, Dict
+from typing import List, Optional, Dict
 import json
 import os
 import argparse
@@ -13,6 +12,7 @@ from rich.logging import RichHandler
 import xml.etree.ElementTree as ElementTree
 from enum import Enum
 import inquirer
+import networkx as nx
 
 
 class FhirResource:
@@ -119,9 +119,12 @@ class FhirResource:
 
 
 class Populator:
-
     log: logging.Logger = None
     temp_dir: str = None
+
+    ignored_dependencies = [
+        "hl7.fhir.r4.core"
+    ]
 
     def __init__(self):
         self.args = self.parse_args()
@@ -161,13 +164,17 @@ class Populator:
         parser.add_argument("--log-file", type=str,
                             help="A log file path")
         parser.add_argument("--get-dependencies", dest="get_dependencies", action="store_true")
+        parser.add_argument("--non-interactive", action="store_true")
         parser.add_argument(
             "--package", nargs="+", type=str,
             help="Specification for the package to download and push to the FHIR server. " +
                  "You can specify more than one package. " +
-                 "Use the syntax 'package:version', or leave out the version to use the latest package " +
+                 "Use the syntax 'package@version', or leave out the version to use the latest package " +
                  "available on Simplifier."
         )
+        parser.add_argument("--include-examples", action="store_true",
+                            help="If provided, the resources in the 'examples' " +
+                                 "folder of the packages will be uploaded.")
         parser.add_argument(
             "--rewrite-versions", action="store_true",
             help="If provided, all versions of FHIR resources will be modified to be consistent with the package " +
@@ -179,19 +186,43 @@ class Populator:
         )
         return parser.parse_args()
 
-    def download_packages(self) -> List[str]:
+    def download_packages(self, packages: List[str]) -> nx.DiGraph:
         untar_folders = []
-        for package in self.args.package:
+        get_deps = self.args.get_dependencies
+        dependency_graph = nx.DiGraph()
+        packages_to_download = list(packages)
+        downloaded_packages = list()
+        while len(packages_to_download) > 0:
+            package = packages_to_download.pop(0)
+            if package in downloaded_packages:
+                self.log.info(f"Package {package} is already downloaded.")
+                continue
             self.log.info(f"Downloading package with spec {package}")
-            untar_folders.append(self.download_untar_package(package_name=package))
-        return untar_folders
+            package_path = self.download_untar_package(package_name=package)
+            untar_folders.append(package_path)
+            dependency_graph.add_node(package, path=package_path)
+            if get_deps:
+                dependencies = self.gather_dependencies(package_path)
+                for dep in dependencies:
+                    ignored = [ign for ign in self.ignored_dependencies if dep.startswith(ign)]
+                    if not any(ignored):
+                        dependency_graph.add_edge(dep, package)
+                        packages_to_download.append(dep)
+                    else:
+                        self.log.warning(f"The package {dep} will not be uploaded, it is ignored.")
+                downloaded_packages.append(package)
+        self.log.info("Packages downloaded with dependencies:")
+        for node in dependency_graph.nodes:
+            self.log.info(f" - {node}")
+        return dependency_graph
 
     def download_untar_package(self, package_name: str) -> str:
-        if ':' in package_name:
-            package_id, package_version = package_name.split(':')
+        if '@' in package_name:
+            package_id, package_version = package_name.split('@')
         else:
-            package_id = package_name
-            package_version = self.get_latest_package_version(package_name)
+            raise ValueError(f"No version specified in argument {package_name}")
+            # package_id = package_name
+            # package_version = self.get_latest_package_version(package_name)
 
         request_url = f"https://packages.simplifier.net/{package_id}/{package_version}"
         download_filename = f"{package_id}_{package_version}"
@@ -225,11 +256,11 @@ class Populator:
         return last_version
 
     def populate(self) -> None:
-        packages = self.download_packages()
-        if self.args.get_dependencies:
-            packages = self.gather_dependencies(packages)
-        self.upload_resources(packages)
+        packages = self.resolve_package_versions()
+        dependency_graph = self.download_packages(packages)
+        self.upload_resources(dependency_graph)
 
+    # noinspection PyArgumentList
     def configure_logger(self) -> logging.Logger:
         handlers = [
             RichHandler()
@@ -238,7 +269,7 @@ class Populator:
             handlers.append(logging.FileHandler(self.args.log_file, mode="w"))
         log_format = "%(message)s"
         log_dateformat = "[%X]"
-        log_level = "NOTSET"
+        log_level = "INFO"
         # logging.basicConfig(
         #     level=level,
         #     datefmt=log_dateformat,
@@ -254,9 +285,13 @@ class Populator:
         for arg in vars(self.args):
             self.log.info(f" - {arg} : {getattr(self.args, arg)}")
 
-    def upload_resources(self, packages: List[str]):
-        for package_dir in packages:
-            self.log.info("Uploading package files from package directory: %s", package_dir)
+    # def upload_resources(self, packages: List[str]):
+    def upload_resources(self, dependency_graph: nx.DiGraph):
+        ordered_dependencies = nx.topological_sort(dependency_graph)
+        for package_node in ordered_dependencies:
+            node_with_info = dependency_graph.nodes[package_node]  # topological sort only return str
+            package_dir = node_with_info["path"]
+            self.log.info("Uploading package '%s' files from package directory: %s", package_node, package_dir)
             fhir_files = []
             package_json = None
             for (directory_path, _, filenames) in os.walk(package_dir):
@@ -266,6 +301,9 @@ class Populator:
                             package_json = json.load(jf)
                         continue
                     full_path = os.path.join(directory_path, file_name)
+                    if os.path.basename(os.path.dirname(full_path)) == "examples" and not self.args.include_examples:
+                        self.log.warning(f"file at {full_path} is an example and ignored.")
+                        continue
                     try:
                         fhir_resource = FhirResource(full_path)
                         if self.args.exclude_resource_type is not None and fhir_resource.resource_type in self.args.exclude_resource_type:
@@ -282,9 +320,10 @@ class Populator:
             package_version = package_json["version"]
             package_name = package_json["name"]
             package_description = package_json["description"]
-            package_dependencies : Dict[str, str] = package_json.get("dependencies")
+            package_dependencies: Dict[str, str] = package_json.get("dependencies")
             self.log.info(f"uploading Package: {package_name} (\"{package_description}\"; version {package_version}; ")
-            if package_dependencies is not None and len(package_dependencies.keys()) > 0:
+            if package_dependencies is not None and len(
+                    package_dependencies.keys()) > 0 and not self.args.get_dependencies:
                 for dep, dep_version in package_dependencies.items():
                     self.log.warning(f"The package has a dependency on: {dep} version {dep_version}")
             if self.args.rewrite_versions:
@@ -293,7 +332,9 @@ class Populator:
             num_files = len(fhir_files)
             while len(fhir_files) > 0:
                 fhir_file = fhir_files.pop(0)
-                self.log.info(f"Uploading {fhir_file.file_path} ({fhir_file.resource_type}) ({num_files-len(fhir_files)}/{num_files})")
+                encoded_path = fhir_file.file_path.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
+                self.log.info(
+                    f"Uploading {encoded_path} ({fhir_file.resource_type}) ({num_files - len(fhir_files)}/{num_files})")
                 upload_url = f"{self.endpoint}/{fhir_file.resource_type}"
                 request_method = "POST"
                 if fhir_file.id is not None:
@@ -322,16 +363,19 @@ class Populator:
                     self.log.error(f"The status code signifies error: {upload_result.status_code}")
                     operation_outcome = upload_result.json()
                     self.log.error(operation_outcome["issue"])
-                    choices = [
-                        inquirer.List('action',
-                                      "What should we do?",
-                                      choices=[("Ignore (continue with the next resource)", "Ignore"),
-                                               ("Retry (because you have changed/uploaded something else)", "Retry")
-                                               ])
-                    ]
-                    sys.stdout.flush()
-                    action = inquirer.prompt(choices)['action']
-                    sys.stdout.flush()
+                    if self.args.non_interactive:
+                        action = "Ignore"
+                    else:
+                        choices = [
+                            inquirer.List('action',
+                                          f"What should we do? (current package: {package_node}):",
+                                          choices=[("Ignore (continue with the next resource)", "Ignore"),
+                                                   ("Retry (because you have changed/uploaded something else)", "Retry")
+                                                   ])
+                        ]
+                        sys.stdout.flush()
+                        action = inquirer.prompt(choices)['action']
+                        sys.stdout.flush()
                     if action == "Ignore":
                         self.log.warning(
                             "The file is ignored. Proceeding with the next file.")
@@ -343,23 +387,37 @@ class Populator:
     def sort_fhir_files(fhir_files: List[FhirResource]):
         def sort_key(x: FhirResource):
             return x.resource_order, x.resource_type
+
         fhir_files.sort(key=sort_key)
         return fhir_files
 
-    def gather_dependencies(self, packages: List[str]) -> Optional[List[str]]:
-        dependencies = {}
-        for package_path in packages:
-            all_files = []
-            for (directory_path, _, filenames) in os.walk(package_path):
-                for file_name in filenames:
-                    all_files.append(os.path.join(directory_path, file_name))
-            package_json_file = [f for f in all_files if "package.json" in f]
-            if len(package_json_file) != 1:
-                self.log.error(f"Within the package {package_path}, one and only one package.json must be present")
-                return None
-            with open(package_json_file[0]) as jf:
-                package_json = json.load(jf)
+    def gather_dependencies(self, package_path: str) -> Optional[List[str]]:
+        dependencies = []
+        all_files = []
+        for (directory_path, _, filenames) in os.walk(package_path):
+            for file_name in filenames:
+                all_files.append(os.path.join(directory_path, file_name))
+        package_json_file = [f for f in all_files if "package.json" in f]
+        if len(package_json_file) != 1:
+            self.log.error(f"Within the package {package_path}, one and only one package.json must be present")
+            return None
+        with open(package_json_file[0]) as jf:
+            package_json = json.load(jf)
+            if "dependencies" in package_json:
                 package_dependencies = package_json["dependencies"]
+            else:
+                package_dependencies = {}
+        for pname, pversion in package_dependencies.items():
+            dependencies.append(f"{pname}@{pversion}")
+        return dependencies
 
-        # sort dependencies
-
+    def resolve_package_versions(self):
+        packages = self.args.package
+        resolved_packages = []
+        for package in packages:
+            if "@" in package:
+                resolved_packages.append(package)
+            else:
+                latest_version = self.get_latest_package_version(package)
+                resolved_packages.append(f"{package}@{latest_version}")
+        return resolved_packages

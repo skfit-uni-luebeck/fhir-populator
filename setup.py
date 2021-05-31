@@ -12,6 +12,7 @@ setup(
     install_requires=[
         "requests",
         "rich",
-        "inquirer"
+        "inquirer",
+        "networkx"
     ]
 )
