@@ -25,7 +25,8 @@ class FhirResource:
         self.file_path = file_path
         self.type = self.get_filetype()
         self.resource_type = self.get_argument("resourceType", raise_on_missing=True)
-        self.id = self.get_id(package_version, generate_missing_ids, versioned_ids)
+        new_id = self.get_id(package_version, generate_missing_ids, versioned_ids)
+        self.id = new_id
         self.resource_order = self.get_resource_order()
 
     resource_order_dict = {
@@ -132,13 +133,14 @@ class FhirResource:
             return None
         filename_no_ext = os.path.splitext(os.path.basename(self.file_path))[0]
         slug_version = slugify(package_version)
+        max_length_versioned = 64 - len(slug_version) - 2
         generated_id = slugify(filename_no_ext, max_length=64 - len(slug_version) - 2)
         if resource_id is None:
             resource_id = generated_id
         if versioned_ids:
-            return f"{resource_id}--{package_version}"
+            return f"{resource_id[:max_length_versioned]}--{slug_version}"
         else:
-            return resource_id
+            return resource_id[:64]
 
 
 class PopulatorSettings:
@@ -294,8 +296,8 @@ class Populator:
                     if not any(ignored):
                         dependency_graph.add_edge(dep, package)
                         packages_to_download.append(dep)
-                    else:
-                        self.log.warning(f"The package {dep} will not be uploaded, it is ignored.")
+                    #else:
+                    #    self.log.warning(f"The package {dep} will not be uploaded, it is ignored.")
                 downloaded_packages.append(package)
         self.log.debug("Packages downloaded with dependencies:")
         for node in dependency_graph.nodes:
@@ -348,6 +350,7 @@ class Populator:
         packages = self.resolve_package_versions()
         dependency_graph = self.download_packages(packages)
         self.upload_resources(dependency_graph)
+        self.log.info("UPLOAD COMPLETE")
 
     # noinspection PyArgumentList
     @staticmethod
@@ -401,8 +404,9 @@ class Populator:
                     full_path = os.path.join(directory_path, file_name)
                     encoded_path = full_path.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
                     if os.path.basename(os.path.dirname(encoded_path)) == "examples" and not self.args.include_examples:
-                        self.log.warning(f"file at {encoded_path} is an example and ignored.")
+                        self.log.debug(f"file at {encoded_path} is an example and ignored.")
                         continue
+                    # noinspection PyBroadException
                     try:
                         fhir_resource = FhirResource(encoded_path, package_version, self.args.only_put,
                                                      self.args.versioned_ids)
@@ -414,14 +418,16 @@ class Populator:
                         else:
                             fhir_files.append(fhir_resource)
                     except (LookupError, json.decoder.JSONDecodeError):
-                        self.log.exception(f"Error reading FHIR resource from package: {file_name}")
+                        self.log.error(f"Error reading FHIR resource as JSON: {file_name}")
+                    except Exception:
+                        self.log.exception(f"Unhandled error reading FHIR resource from package: {file_name}")
             fhir_files = self.sort_fhir_files(fhir_files)
             rewrite_version = None
             package_version = package_json["version"]
             package_name = package_json["name"]
             package_description = package_json["description"]
             package_dependencies: Dict[str, str] = package_json.get("dependencies")
-            self.log.info(f"uploading Package: {package_name} (\"{package_description}\"; version {package_version}; ")
+            self.log.info(f"uploading package: {package_name} (\"{package_description}\"; version {package_version})")
             if not self.args.get_dependencies and package_dependencies is not None and len(
                     package_dependencies.keys()) > 0 and not self.args.get_dependencies:
                 for dep, dep_version in package_dependencies.items():
