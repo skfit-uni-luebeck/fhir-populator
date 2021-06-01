@@ -13,6 +13,7 @@ setup(
         "requests",
         "rich",
         "inquirer",
-        "networkx"
+        "networkx",
+        "python-slugify"
     ]
 )

@@ -13,17 +13,22 @@ import xml.etree.ElementTree as ElementTree
 from enum import Enum
 import inquirer
 import networkx as nx
+from slugify import slugify
 
 
 class FhirResource:
-    def __init__(self, file_path: str):
+    def __init__(self,
+                 file_path: str,
+                 package_version: str,
+                 generate_missing_ids: bool,
+                 versioned_ids: bool):
         self.file_path = file_path
         self.type = self.get_filetype()
         self.resource_type = self.get_argument("resourceType", raise_on_missing=True)
-        self.id = self.get_argument("id", raise_on_missing=False)
+        self.id = self.get_id(package_version, generate_missing_ids, versioned_ids)
         self.resource_order = self.get_resource_order()
 
-    resource_order = {
+    resource_order_dict = {
         "CodeSystem": 1,
         "ValueSet": 2,
         "ConceptMap": 3,
@@ -38,12 +43,11 @@ class FhirResource:
         "Observation": 120,
         "Procedure": 120,
         "ImplementationGuide": 999,
-
     }
 
     def get_resource_order(self, default_resource_priority: int = 50) -> int:
-        if self.resource_type in self.resource_order:
-            return self.resource_order[self.resource_type]
+        if self.resource_type in self.resource_order_dict:
+            return self.resource_order_dict[self.resource_type]
         else:
             return default_resource_priority
 
@@ -54,10 +58,10 @@ class FhirResource:
             return self.get_argument_json(argument, raise_on_missing)
 
     def get_payload(self, rewrite_version: Optional[str] = None) -> str:
-        if rewrite_version is None:
-            with open(self.file_path, "r") as fs:
-                return fs.read()
-        elif self.type == FhirResource.FileType.XML:
+        # if rewrite_version is None:
+        #     with open(self.file_path, "r") as fs:
+        #         return fs.read()
+        if self.type == FhirResource.FileType.XML:
             return self.get_payload_rewrite_xml(rewrite_version)
         else:
             return self.get_payload_rewrite_json(rewrite_version)
@@ -81,19 +85,24 @@ class FhirResource:
     def __repr__(self):
         return f"FHIR Resource ({self.resource_type}) @ {self.file_path} - {self.resource_type}"
 
-    def get_payload_rewrite_xml(self, rewrite_version: str) -> str:
+    def get_payload_rewrite_xml(self, rewrite_version: Optional[str]) -> str:
         tree = ElementTree.parse(self.file_path)
         root = tree.getroot()
-        version_node = root.find("version")
-        if version_node is not None:
-            version_node.text = rewrite_version
+        if rewrite_version is not None:
+            version_node = root.find("version")
+            if version_node is not None:
+                version_node.text = rewrite_version
+        id_node = root.find("id")
+        id_node.text = self.id
         return ElementTree.tostring(root, encoding="unicode")
 
-    def get_payload_rewrite_json(self, rewrite_version: str, indent: int = 2) -> str:
+    def get_payload_rewrite_json(self, rewrite_version: Optional[str], indent: int = 2) -> str:
         with open(self.file_path, "r") as jf:
             json_dict = json.load(jf)
-        if "version" in json_dict:
-            json_dict["version"] = rewrite_version
+        if rewrite_version is not None:
+            if "version" in json_dict:
+                json_dict["version"] = rewrite_version
+        json_dict["id"] = self.id
         return json.dumps(json_dict, indent=indent)
 
     def get_argument_xml(self, argument: str, raise_on_missing: bool = False):
@@ -117,36 +126,88 @@ class FhirResource:
             else:
                 return json_dict[argument]
 
+    def get_id(self, package_version, generate_missing_ids, versioned_ids) -> Optional[str]:
+        resource_id = self.get_argument("id", raise_on_missing=False)
+        if resource_id is None and not generate_missing_ids:
+            return None
+        filename_no_ext = os.path.splitext(os.path.basename(self.file_path))[0]
+        slug_version = slugify(package_version)
+        generated_id = slugify(filename_no_ext, max_length=64 - len(slug_version) - 2)
+        if resource_id is None:
+            resource_id = generated_id
+        if versioned_ids:
+            return f"{resource_id}--{package_version}"
+        else:
+            return resource_id
+
+
+class PopulatorSettings:
+    endpoint: str
+    authorization_header: Optional[str]
+    log_file: Optional[str]
+    get_dependencies: bool
+    non_interactive: bool
+    packages: List[str]
+    include_examples: bool
+    rewrite_versions: bool
+    exclude_resource_type: List[str]
+    log_level: str
+    only_put: bool
+    versioned_ids: bool
+    registry_url: str
+    log: logging.Logger
+
+    def __init__(self, args: argparse.Namespace, log: logging.Logger):
+        self.registry_url = args.registry_url.rstrip("/")
+        self.endpoint = args.endpoint.rstrip("/")
+        self.authorization_header = args.authorization_header
+        self.log_file = args.log_file
+        self.get_dependencies = args.get_dependencies
+        self.non_interactive = args.non_interactive
+        self.packages = args.packages
+        self.include_examples = args.include_examples
+        self.rewrite_versions = args.rewrite_versions
+        self.log_level = args.log_level
+        self.exclude_resource_type = args.exclude_resource_type
+        self.only_put = args.only_put
+        self.versioned_ids = args.versioned_ids
+        self.log = log
+        self.print_args(args)
+
+    def print_args(self, args: argparse.Namespace):
+        for arg in vars(args):
+            self.log.info(f" - {arg} : {getattr(args, arg)}")
+
 
 class Populator:
     log: logging.Logger = None
     temp_dir: str = None
+    settings: PopulatorSettings = None
 
     ignored_dependencies = [
-        "hl7.fhir.r4.core"
+        "hl7.fhir.r4",
     ]
 
     def __init__(self):
-        self.args = self.parse_args()
-        self.endpoint = self.args.endpoint.rstrip('/')
-        self.log = self.configure_logger()
+        args = self.parse_args()
+        self.log = self.configure_logger(args)
+        self.args = PopulatorSettings(args, self.log)
         self.temp_dir = tempfile.mkdtemp(prefix="fhir-populator")
         self.download_dir = os.path.join(self.temp_dir, "download")
         os.mkdir(self.download_dir)
         self.extract_dir = os.path.join(self.temp_dir, "extract")
         os.mkdir(self.extract_dir)
-        self.print_args()
         self.request_session = requests.Session()
         if self.args.authorization_header is not None:
             self.request_session.headers.update({
                 "Authorization": self.args.authorization_header
             })
-            self.log.info(f"Using Authorization header: {self.args.authorization_header[:10]}...")
+            self.log.debug(f"Using Authorization header: {self.args.authorization_header[:10]}...")
 
     def __del__(self):
         if self.log is not None:
-            self.log.info("Cleaning up!")
-            self.log.info(f"Deleting temp directory: {self.temp_dir}")
+            self.log.debug("Cleaning up!")
+            self.log.debug(f"Deleting temp directory: {self.temp_dir}")
         if self.temp_dir is not None:
             shutil.rmtree(self.temp_dir)
 
@@ -157,32 +218,57 @@ class Populator:
             formatter_class=argparse.ArgumentDefaultsHelpFormatter
         )
         parser.add_argument(
-            "--endpoint", help="The FHIR server REST endpoint", required=True, type=str
+            "--endpoint", required=True, type=str,
+            help="The FHIR server REST endpoint"
         )
-        parser.add_argument("--authorization-header", type=str,
-                            help="an authorization header to use for uploading. If none, nothing will be sent.")
-        parser.add_argument("--log-file", type=str,
-                            help="A log file path")
-        parser.add_argument("--get-dependencies", dest="get_dependencies", action="store_true")
-        parser.add_argument("--non-interactive", action="store_true")
         parser.add_argument(
-            "--package", nargs="+", type=str,
-            help="Specification for the package to download and push to the FHIR server. " +
-                 "You can specify more than one package. " +
-                 "Use the syntax 'package@version', or leave out the version to use the latest package " +
-                 "available on Simplifier."
+            "--authorization-header", type=str,
+            help="an authorization header to use for uploading. If none, nothing will be sent.")
+        parser.add_argument(
+            "--log-file", type=str, help="A log file path")
+        parser.add_argument(
+            "--get-dependencies", dest="get_dependencies", action="store_true",
+            help="if provided, dependencies will be retrieved from the FHIR registry.")
+        parser.add_argument(
+            "--non-interactive", action="store_true",
+            help="In case of errors returned by this FHIR server, the error will be ignored with only a log message " +
+                 "being written out. Might be helpful when integrating this module into a script."
         )
-        parser.add_argument("--include-examples", action="store_true",
-                            help="If provided, the resources in the 'examples' " +
-                                 "folder of the packages will be uploaded.")
+        parser.add_argument(
+            "--include-examples", action="store_true",
+            help="If provided, the resources in the 'examples' " +
+                 "folder of the packages will be uploaded.")
+        parser.add_argument(
+            "--log-level", choices=["INFO", "WARNING", "DEBUG", "ERROR"], default="INFO",
+            help="The level to log at")
         parser.add_argument(
             "--rewrite-versions", action="store_true",
             help="If provided, all versions of FHIR resources will be modified to be consistent with the package " +
                  "version. Otherwise, the version is used as-is!"
         )
         parser.add_argument(
+            "--only-put", action="store_true",
+            help="if provided, IDs will be generated for all resources that lack one. This can be combined with " +
+                 "--versioned-ids."
+        )
+        parser.add_argument(
+            "--versioned-ids", action="store_true",
+            help="if provided, all resource IDs will be prefixed with the package version."
+        )
+        parser.add_argument(
             "--exclude-resource-type", type=str, nargs="*",
             help="Specify resource types to ignore!"
+        )
+        parser.add_argument(
+            "--registry-url", type=str, default="https://packages.simplifier.net",
+            help="The FHIR registry url, Simplifier by default"
+        )
+        parser.add_argument(
+            "--package", nargs="+", type=str, dest="packages",
+            help="Specification for the package to download and push to the FHIR server. " +
+                 "You can specify more than one package. " +
+                 "Use the syntax 'package@version', or leave out the version to use the latest package " +
+                 "available on the registry."
         )
         return parser.parse_args()
 
@@ -195,7 +281,7 @@ class Populator:
         while len(packages_to_download) > 0:
             package = packages_to_download.pop(0)
             if package in downloaded_packages:
-                self.log.info(f"Package {package} is already downloaded.")
+                self.log.debug(f"Package {package} is already downloaded.")
                 continue
             self.log.info(f"Downloading package with spec {package}")
             package_path = self.download_untar_package(package_name=package)
@@ -211,20 +297,23 @@ class Populator:
                     else:
                         self.log.warning(f"The package {dep} will not be uploaded, it is ignored.")
                 downloaded_packages.append(package)
-        self.log.info("Packages downloaded with dependencies:")
+        self.log.debug("Packages downloaded with dependencies:")
         for node in dependency_graph.nodes:
-            self.log.info(f" - {node}")
+            self.log.debug(f" - {node}")
         return dependency_graph
 
     def download_untar_package(self, package_name: str) -> str:
+        """
+        download a package from the registry
+        :param package_name:
+        :return:
+        """
         if '@' in package_name:
             package_id, package_version = package_name.split('@')
         else:
             raise ValueError(f"No version specified in argument {package_name}")
-            # package_id = package_name
-            # package_version = self.get_latest_package_version(package_name)
 
-        request_url = f"https://packages.simplifier.net/{package_id}/{package_version}"
+        request_url = f"{self.args.registry_url}/{package_id}/{package_version}"
         download_filename = f"{package_id}_{package_version}"
         download_path = os.path.join(self.download_dir, f"{download_filename}.tar")
         extract_path = os.path.join(self.extract_dir, download_filename)
@@ -236,23 +325,23 @@ class Populator:
         with open(download_path, "wb") as download_fs:
             for chunk in download_response.iter_content(chunk_size=8192):
                 download_fs.write(chunk)
-        self.log.info(f"Downloaded to {download_path}")
+        self.log.debug(f"Downloaded to {download_path}")
         with tarfile.open(download_path) as download_tar_fs:
             download_tar_fs.extractall(extract_path)
-        self.log.info(f"Extracted to {extract_path}")
+        self.log.debug(f"Extracted to {extract_path}")
         return extract_path
 
     def get_latest_package_version(self, package_name: str) -> str:
-        lookup_url = f"https://packages.simplifier.net/{package_name}"
+        lookup_url = f"{self.args.registry_url}/{package_name}"
         lookup_request = requests.Request(
             method="GET",
             url=lookup_url
         ).prepare()
         response = self.request_session.send(lookup_request)
         versions = [v["version"] for v in response.json()["versions"].values()]
-        self.log.info(f"Available versions for '{package_name}': {versions}")
+        self.log.debug(f"Available versions for '{package_name}': {versions}")
         last_version = versions[-1]
-        self.log.info(f"Latest version: {last_version}")
+        self.log.debug(f"Latest version: {last_version}")
         return last_version
 
     def populate(self) -> None:
@@ -261,81 +350,92 @@ class Populator:
         self.upload_resources(dependency_graph)
 
     # noinspection PyArgumentList
-    def configure_logger(self) -> logging.Logger:
+    @staticmethod
+    def configure_logger(args: argparse.Namespace) -> logging.Logger:
+        """
+        configure the application logger. This may log to a file (if provided), and configures the log level
+        :param args: the (raw) argparse arguments
+        :return: the configured Rich logger
+        """
         handlers = [
             RichHandler()
         ]
-        if self.args.log_file is not None:
-            handlers.append(logging.FileHandler(self.args.log_file, mode="w"))
+        if args.log_file is not None:
+            handlers.append(logging.FileHandler(args.log_file, mode="w"))
         log_format = "%(message)s"
         log_dateformat = "[%X]"
-        log_level = "INFO"
-        # logging.basicConfig(
-        #     level=level,
-        #     datefmt=log_dateformat,
-        #     format=log_format
-        # )
-        # logger = logging.getLogger("fhir-populator")
+        log_level = args.log_level
         logging.basicConfig(
             level=log_level, format=log_format, datefmt=log_dateformat, handlers=handlers
         )
         return logging.getLogger("rich")
 
-    def print_args(self):
-        for arg in vars(self.args):
-            self.log.info(f" - {arg} : {getattr(self.args, arg)}")
-
-    # def upload_resources(self, packages: List[str]):
     def upload_resources(self, dependency_graph: nx.DiGraph):
+        """
+        upload the resources represented by the downloaded packages within the dependency graph.
+        This will walk the dependency graph from top to bottom, and upload the files within each package in semantic
+        order to minimize missing references.
+        When an ID is present in the resource, this will use PUT, otherwise POST, unless args.only_put == TRUE.
+        In the latter case, the filename of the resource will be hashed to generate a unique ID that is somewhat stable
+        across repetitive runs of the app.
+        :param dependency_graph: the dependency graph. If no dependencies are to be fetched, this will only contain the
+        nodes of the provided packages, and still work
+        :return: None
+        """
         ordered_dependencies = nx.topological_sort(dependency_graph)
+        # order the resources in topological order: every node before its dependencies
         for package_node in ordered_dependencies:
-            node_with_info = dependency_graph.nodes[package_node]  # topological sort only return str
+            node_with_info = dependency_graph.nodes[package_node]
+            # topological sort only returns the node name as str
             package_dir = node_with_info["path"]
-            self.log.info("Uploading package '%s' files from package directory: %s", package_node, package_dir)
+            self.log.debug("Uploading package '%s' files from package directory: %s", package_node, package_dir)
             fhir_files = []
-            package_json = None
+            package_json = self.read_package_json(package_dir)
+            package_version = package_json["version"]
+            if package_json is None:
+                raise FileNotFoundError(f"package.json was not found within {package_dir}!")
             for (directory_path, _, filenames) in os.walk(package_dir):
                 for file_name in filenames:
                     if file_name == "package.json":
-                        with open(os.path.join(directory_path, file_name)) as jf:
-                            package_json = json.load(jf)
                         continue
                     full_path = os.path.join(directory_path, file_name)
-                    if os.path.basename(os.path.dirname(full_path)) == "examples" and not self.args.include_examples:
-                        self.log.warning(f"file at {full_path} is an example and ignored.")
+                    encoded_path = full_path.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
+                    if os.path.basename(os.path.dirname(encoded_path)) == "examples" and not self.args.include_examples:
+                        self.log.warning(f"file at {encoded_path} is an example and ignored.")
                         continue
                     try:
-                        fhir_resource = FhirResource(full_path)
-                        if self.args.exclude_resource_type is not None and fhir_resource.resource_type in self.args.exclude_resource_type:
-                            self.log.debug(f"Resource {full_path} is of resource type {fhir_resource.resource_type}" +
-                                           f" and is skipped.")
+                        fhir_resource = FhirResource(encoded_path, package_version, self.args.only_put,
+                                                     self.args.versioned_ids)
+                        if self.args.exclude_resource_type is not None \
+                                and fhir_resource.resource_type in self.args.exclude_resource_type:
+                            self.log.debug(
+                                f"Resource {encoded_path} is of resource type {fhir_resource.resource_type}" +
+                                f" and is skipped.")
                         else:
-                            fhir_files.append(FhirResource(full_path))
-                    except LookupError:
+                            fhir_files.append(fhir_resource)
+                    except (LookupError, json.decoder.JSONDecodeError):
                         self.log.exception(f"Error reading FHIR resource from package: {file_name}")
             fhir_files = self.sort_fhir_files(fhir_files)
-            if package_json is None:
-                raise FileNotFoundError(f"package.json was not found within {package_dir}!")
             rewrite_version = None
             package_version = package_json["version"]
             package_name = package_json["name"]
             package_description = package_json["description"]
             package_dependencies: Dict[str, str] = package_json.get("dependencies")
             self.log.info(f"uploading Package: {package_name} (\"{package_description}\"; version {package_version}; ")
-            if package_dependencies is not None and len(
+            if not self.args.get_dependencies and package_dependencies is not None and len(
                     package_dependencies.keys()) > 0 and not self.args.get_dependencies:
                 for dep, dep_version in package_dependencies.items():
-                    self.log.warning(f"The package has a dependency on: {dep} version {dep_version}")
+                    self.log.warning(f"The package {package_node} has a dependency on: {dep} version {dep_version}")
             if self.args.rewrite_versions:
                 rewrite_version = package_version
-                self.log.warning(f"rewriting resources in package")
+                self.log.warning(f"rewriting resources in package {package_node}")
             num_files = len(fhir_files)
             while len(fhir_files) > 0:
                 fhir_file = fhir_files.pop(0)
                 encoded_path = fhir_file.file_path.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
                 self.log.info(
                     f"Uploading {encoded_path} ({fhir_file.resource_type}) ({num_files - len(fhir_files)}/{num_files})")
-                upload_url = f"{self.endpoint}/{fhir_file.resource_type}"
+                upload_url = f"{self.args.endpoint}/{fhir_file.resource_type}"
                 request_method = "POST"
                 if fhir_file.id is not None:
                     request_method = "PUT"
@@ -343,7 +443,7 @@ class Populator:
                 if fhir_file.resource_type == "Bundle":
                     bundle_type = fhir_file.get_argument("type", raise_on_missing=False)
                     if bundle_type == "transaction":
-                        upload_url = self.endpoint
+                        upload_url = self.args.endpoint
                         request_method = "POST"
                 content_type = "application/xml" if fhir_file.type == FhirResource.FileType.XML else "application/json"
                 payload = fhir_file.get_payload(rewrite_version=rewrite_version).encode("utf-8")
@@ -358,9 +458,10 @@ class Populator:
                 self.log.debug(f"uploading to {upload_url} (content type: {content_type})")
                 upload_result = self.request_session.send(upload_request)
                 if 200 <= upload_result.status_code < 300:
-                    self.log.info(f"uploaded {fhir_file.resource_type} with status {upload_result.status_code}")
+                    self.log.debug(f"uploaded {fhir_file.resource_type} with status {upload_result.status_code}")
                 else:
-                    self.log.error(f"The status code signifies error: {upload_result.status_code}")
+                    self.log.error(f"Error status code {upload_result.status_code} for {fhir_file.file_path} " +
+                                   f"({fhir_file.resource_type})")
                     operation_outcome = upload_result.json()
                     self.log.error(operation_outcome["issue"])
                     if self.args.non_interactive:
@@ -385,14 +486,21 @@ class Populator:
 
     @staticmethod
     def sort_fhir_files(fhir_files: List[FhirResource]):
+        """
+        sort the FHIR files provided in a logical order for uploading to the server.
+        FhirResource has a dict that assigns priorities to each resource type, e.g. CodeSystems before ValueSets
+        In this way,  dependency errors on other resources is (hopefully) minimized
+        :param fhir_files: the fhir file list
+        :return: the sorted fhir file list
+        """
+
         def sort_key(x: FhirResource):
             return x.resource_order, x.resource_type
 
         fhir_files.sort(key=sort_key)
         return fhir_files
 
-    def gather_dependencies(self, package_path: str) -> Optional[List[str]]:
-        dependencies = []
+    def read_package_json(self, package_path: str) -> Optional[dict]:
         all_files = []
         for (directory_path, _, filenames) in os.walk(package_path):
             for file_name in filenames:
@@ -403,16 +511,31 @@ class Populator:
             return None
         with open(package_json_file[0]) as jf:
             package_json = json.load(jf)
-            if "dependencies" in package_json:
-                package_dependencies = package_json["dependencies"]
-            else:
-                package_dependencies = {}
-        for pname, pversion in package_dependencies.items():
-            dependencies.append(f"{pname}@{pversion}")
+        return package_json
+
+    def gather_dependencies(self, package_path: str) -> Optional[List[str]]:
+        """
+        read the package.json of the provided package path, and return the list of dependencies
+        :param package_path: the path of the extracted package
+        :return: the list of dependencies, in the syntax required for downloading
+        """
+        dependencies = []
+        package_json = self.read_package_json(package_path)
+        if "dependencies" in package_json:
+            package_dependencies = package_json["dependencies"]
+        else:
+            package_dependencies = {}
+        for package_name, package_version in package_dependencies.items():
+            dependencies.append(f"{package_name}@{package_version}")
         return dependencies
 
-    def resolve_package_versions(self):
-        packages = self.args.package
+    def resolve_package_versions(self) -> List[str]:
+        """
+        resolve the latest version of the package notations provided in args.packages
+        If no "@" character is present, this will query the registry API to find the latest version specifier
+        :return: the list of resolved packages
+        """
+        packages = self.args.packages
         resolved_packages = []
         for package in packages:
             if "@" in package:
