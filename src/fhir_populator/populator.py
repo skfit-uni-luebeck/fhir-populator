@@ -170,7 +170,7 @@ class PopulatorSettings:
         self.include_examples = args.include_examples
         self.rewrite_versions = args.rewrite_versions
         self.log_level = args.log_level
-        self.exclude_resource_type = args.exclude_resource_type
+        self.exclude_resource_type = [a.lower() for a in args.exclude_resource_type] if args.exclude_resource_type is not None else []
         self.only_put = args.only_put
         self.versioned_ids = args.versioned_ids
         self.log = log
@@ -411,7 +411,7 @@ class Populator:
                         fhir_resource = FhirResource(encoded_path, package_version, self.args.only_put,
                                                      self.args.versioned_ids)
                         if self.args.exclude_resource_type is not None \
-                                and fhir_resource.resource_type in self.args.exclude_resource_type:
+                                and fhir_resource.resource_type.lower() in self.args.exclude_resource_type:
                             self.log.debug(
                                 f"Resource {encoded_path} is of resource type {fhir_resource.resource_type}" +
                                 f" and is skipped.")
