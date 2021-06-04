@@ -26,7 +26,7 @@ These commands will create a new directory, visit it, create the virtual environ
 Next, load the package from PyPI:
 
 ```bash
-pip install fhir-populator
+python -m pip install fhir-populator
 ```
 
 You can now start it as a Python module:
@@ -120,6 +120,14 @@ There are a number of configuration options, which are (hopefully) mostly self-e
 * `--rewrite-versions`: If provided, all `version` attributes of the resources will be rewritten to match the version in the `package.json`, to separate these definitions from previous versions. You will need to think about the versions numbers you use when communicating with others, who might not use the same versions - ⚠️ use with caution! ⚠️
 * `--versioned-ids`: To separate versions of the resources on the same FHIR server, you can override the IDs provided in the resources, by including the slugified version of the package in the ID. If combined with the `--only-put` switch, this will work the same, versioning existing IDs, and slugifying + versioning the filename of resources without IDs.
 
+## Updating
+
+```bash
+cd fhir-populator
+source venv/bin/activate
+python -m pip install --upgrade fhir-populator
+```
+
 ## Hacking
 
 If you want to customize the program, you should:
@@ -130,3 +138,10 @@ If you want to customize the program, you should:
 4. Customize the script. Re-run step 3 if you change the script.
 5. `python -m fhir_populator`, as before.
 6. Create a issue and pull request in the GitHub Repo! We welcome contributions!
+
+## Changelog
+
+| Version | Date | Changes |
+|-|-|-|
+| v1.0.10 | 2021-06-03 | Initial release |
+| v1.1.0  | 2021-06-08 | - handle Unicode filenames, especially on BSD/macOS (#1)<br>- do not serialize null ID for POST (#2)<br>-include option for only certain resource types(#6)<br>fix XML handling (#6) |
