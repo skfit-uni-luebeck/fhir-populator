@@ -93,8 +93,9 @@ class FhirResource:
             version_node = root.find("version")
             if version_node is not None:
                 version_node.text = rewrite_version
-        id_node = root.find("id")
-        id_node.text = self.id
+        if self.id is not None:
+            id_node = root.find("id")
+            id_node.text = self.id
         return ElementTree.tostring(root, encoding="unicode")
 
     def get_payload_rewrite_json(self, rewrite_version: Optional[str], indent: int = 2) -> str:
@@ -103,7 +104,8 @@ class FhirResource:
         if rewrite_version is not None:
             if "version" in json_dict:
                 json_dict["version"] = rewrite_version
-        json_dict["id"] = self.id
+        if self.id is not None:
+            json_dict["id"] = self.id
         return json.dumps(json_dict, indent=indent)
 
     def get_argument_xml(self, argument: str, raise_on_missing: bool = False):
