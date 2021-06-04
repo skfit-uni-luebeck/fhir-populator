@@ -125,7 +125,7 @@ There are a number of configuration options, which are (hopefully) mostly self-e
 If you want to customize the program, you should:
 
 1. create a fork in GitHub, and clone it.
-2. create a new virtual environment in your fork: `python -m venv venv`; `source venv/bin/active`
+2. create a new virtual environment in your fork: `python -m venv .venv`; `source .venv/bin/activate`
 3. Install the package locally, using `pip install .`
 4. Customize the script. Re-run step 3 if you change the script.
 5. `python -m fhir_populator`, as before.
