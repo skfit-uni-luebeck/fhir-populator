@@ -1,18 +1,20 @@
-import sys
-import tempfile
-from typing import List, Optional, Dict
-import json
-import os
 import argparse
-import tarfile
-import shutil
+import json
 import logging
-import requests
-from rich.logging import RichHandler
+import os
+import shutil
+import sys
+import tarfile
+import tempfile
 import xml.etree.ElementTree as ElementTree
 from enum import Enum
+from io import BufferedReader
+from typing import List, Optional, Dict
+
 import inquirer
 import networkx as nx
+import requests
+from rich.logging import RichHandler
 from slugify import slugify
 
 
@@ -170,7 +172,9 @@ class PopulatorSettings:
         self.include_examples = args.include_examples
         self.rewrite_versions = args.rewrite_versions
         self.log_level = args.log_level
-        self.exclude_resource_type = [a.lower() for a in args.exclude_resource_type] if args.exclude_resource_type is not None else []
+        self.exclude_resource_type = [a.lower() for a in args.exclude_resource_type] \
+            if args.exclude_resource_type is not None \
+            else []
         self.only_put = args.only_put
         self.versioned_ids = args.versioned_ids
         self.log = log
@@ -296,8 +300,6 @@ class Populator:
                     if not any(ignored):
                         dependency_graph.add_edge(dep, package)
                         packages_to_download.append(dep)
-                    #else:
-                    #    self.log.warning(f"The package {dep} will not be uploaded, it is ignored.")
                 downloaded_packages.append(package)
         self.log.debug("Packages downloaded with dependencies:")
         for node in dependency_graph.nodes:
@@ -328,8 +330,29 @@ class Populator:
             for chunk in download_response.iter_content(chunk_size=8192):
                 download_fs.write(chunk)
         self.log.debug(f"Downloaded to {download_path}")
-        with tarfile.open(download_path) as download_tar_fs:
-            download_tar_fs.extractall(extract_path)
+        try:
+            with tarfile.open(download_path) as download_tar_fs:
+                for tarinfo in download_tar_fs:
+                    try:
+                        extract_dir = os.path.dirname(tarinfo.path)
+                        t_filename, t_ext = os.path.splitext(os.path.basename(tarinfo.path))
+                        slug_filename = slugify(t_filename)
+                        extract_filename = f"{slug_filename}{t_ext}"
+                        extract_to_folder = os.path.join(extract_path, extract_dir)
+                        os.makedirs(extract_to_folder, exist_ok=True)
+                        extract_to = os.path.join(extract_to_folder, extract_filename)
+                        with open(extract_to, "wb") as out_fp:
+                            tar_br: BufferedReader
+                            with download_tar_fs.extractfile(tarinfo) as tar_br:
+                                out_fp.write(tar_br.read())
+                        self.log.debug(f"Extracted {extract_to}")
+                    except (tarfile.TarError, IOError, OSError):
+                        logging.exception(f"Unhandled error extracting member '{tarinfo}' from {download_path}." +
+                                          "Extraction will continue.")
+                        continue
+        except (tarfile.TarError, IOError, OSError):
+            logging.exception(f"Unhandled error extracting archive {download_path}")
+            exit(1)
         self.log.debug(f"Extracted to {extract_path}")
         return extract_path
 
@@ -461,7 +484,7 @@ class Populator:
                     },
                     data=payload
                 ).prepare()
-                self.log.debug(f"uploading to {upload_url} (content type: {content_type})")
+                self.log.info(f"uploading to {upload_url} (content type: {content_type})")
                 upload_result = self.request_session.send(upload_request)
                 if 200 <= upload_result.status_code < 300:
                     self.log.debug(f"uploaded {fhir_file.resource_type} with status {upload_result.status_code}")
