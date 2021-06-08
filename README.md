@@ -26,7 +26,7 @@ These commands will create a new directory, visit it, create the virtual environ
 Next, load the package from PyPI:
 
 ```bash
-pip install fhir-populator
+python -m pip install fhir-populator
 ```
 
 You can now start it as a Python module:
@@ -41,12 +41,12 @@ and the help will be printed:
 usage: fhir_populator [-h] --endpoint ENDPOINT [--authorization-header AUTHORIZATION_HEADER] [--log-file LOG_FILE]
                       [--get-dependencies] [--non-interactive] [--include-examples]
                       [--log-level {INFO,WARNING,DEBUG,ERROR}] [--rewrite-versions] [--only-put] [--versioned-ids]
-                      [--exclude-resource-type [EXCLUDE_RESOURCE_TYPE ...]] [--registry-url REGISTRY_URL]
-                      [--package PACKAGES [PACKAGES ...]]
+                      [--exclude-resource-type [EXCLUDE_RESOURCE_TYPE ...] | --only [ONLY ...]]
+                      [--registry-url REGISTRY_URL] [--package PACKAGES [PACKAGES ...]]
 
 optional arguments:
   -h, --help            show this help message and exit
-  --https://wiki.hl7.org/FHIR_NPM_Package_Spec ENDPOINT   The FHIR server REST endpoint (default: None)
+  --endpoint ENDPOINT   The FHIR server REST endpoint (default: None)
   --authorization-header AUTHORIZATION_HEADER
                         an authorization header to use for uploading. If none, nothing will be sent. (default: None)
   --log-file LOG_FILE   A log file path (default: None)
@@ -65,6 +65,8 @@ optional arguments:
   --versioned-ids       if provided, all resource IDs will be prefixed with the package version. (default: False)
   --exclude-resource-type [EXCLUDE_RESOURCE_TYPE ...]
                         Specify resource types to ignore! (default: None)
+  --only [ONLY ...]     Only upload the resource types provided here, e.g. only StructureDefinitions, CodeSystems and
+                        ValueSets (default: None)
   --registry-url REGISTRY_URL
                         The FHIR registry url, Simplifier by default (default: https://packages.simplifier.net)
   --package PACKAGES [PACKAGES ...]
@@ -120,13 +122,28 @@ There are a number of configuration options, which are (hopefully) mostly self-e
 * `--rewrite-versions`: If provided, all `version` attributes of the resources will be rewritten to match the version in the `package.json`, to separate these definitions from previous versions. You will need to think about the versions numbers you use when communicating with others, who might not use the same versions - ⚠️ use with caution! ⚠️
 * `--versioned-ids`: To separate versions of the resources on the same FHIR server, you can override the IDs provided in the resources, by including the slugified version of the package in the ID. If combined with the `--only-put` switch, this will work the same, versioning existing IDs, and slugifying + versioning the filename of resources without IDs.
 
+## Updating
+
+```bash
+cd fhir-populator
+source venv/bin/activate
+python -m pip install --upgrade fhir-populator
+```
+
 ## Hacking
 
 If you want to customize the program, you should:
 
 1. create a fork in GitHub, and clone it.
-2. create a new virtual environment in your fork: `python -m venv venv`; `source venv/bin/active`
+2. create a new virtual environment in your fork: `python -m venv .venv`; `source .venv/bin/activate`
 3. Install the package locally, using `pip install .`
 4. Customize the script. Re-run step 3 if you change the script.
 5. `python -m fhir_populator`, as before.
 6. Create a issue and pull request in the GitHub Repo! We welcome contributions!
+
+## Changelog
+
+| Version | Date | Changes |
+|-|-|-|
+| v1.0.10 | 2021-06-03 | Initial release |
+| v1.1.0  | 2021-06-08 | - handle Unicode filenames, especially on BSD/macOS (#1)<br>- do not serialize null ID for POST (#2)<br>- include option for only certain resource types(#6)<br>- fix XML handling (#6)<br>- add LICENSE |

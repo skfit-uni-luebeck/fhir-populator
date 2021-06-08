@@ -1,18 +1,20 @@
-import sys
-import tempfile
-from typing import List, Optional, Dict
-import json
-import os
 import argparse
-import tarfile
-import shutil
+import json
 import logging
-import requests
-from rich.logging import RichHandler
+import os
+import shutil
+import sys
+import tarfile
+import tempfile
 import xml.etree.ElementTree as ElementTree
 from enum import Enum
+from io import BufferedReader
+from typing import List, Optional, Dict
+
 import inquirer
 import networkx as nx
+import requests
+from rich.logging import RichHandler
 from slugify import slugify
 
 
@@ -93,8 +95,9 @@ class FhirResource:
             version_node = root.find("version")
             if version_node is not None:
                 version_node.text = rewrite_version
-        id_node = root.find("id")
-        id_node.text = self.id
+        if self.id is not None:
+            id_node = root.find("id")
+            id_node.text = self.id
         return ElementTree.tostring(root, encoding="unicode")
 
     def get_payload_rewrite_json(self, rewrite_version: Optional[str], indent: int = 2) -> str:
@@ -103,12 +106,20 @@ class FhirResource:
         if rewrite_version is not None:
             if "version" in json_dict:
                 json_dict["version"] = rewrite_version
-        json_dict["id"] = self.id
+        if self.id is not None:
+            json_dict["id"] = self.id
         return json.dumps(json_dict, indent=indent)
 
     def get_argument_xml(self, argument: str, raise_on_missing: bool = False):
         tree = ElementTree.parse(self.file_path)
         root = tree.getroot()
+        if argument == "resourceType":
+            # resource type is provided as the name of the tag, instead of as an attribute
+            tag = root.tag
+            if "{" in tag:
+                return tag.split("}")[1]  # Tag name without namespace
+            else:
+                return tag  # Tag does not seem to contain a namespace
         res_node = root.find(argument)
         if res_node is None and raise_on_missing:
             raise LookupError(f"the resource {self.file_path} does not have an attribute {argument}!")
@@ -157,6 +168,7 @@ class PopulatorSettings:
     only_put: bool
     versioned_ids: bool
     registry_url: str
+    only: List[str]
     log: logging.Logger
 
     def __init__(self, args: argparse.Namespace, log: logging.Logger):
@@ -170,7 +182,12 @@ class PopulatorSettings:
         self.include_examples = args.include_examples
         self.rewrite_versions = args.rewrite_versions
         self.log_level = args.log_level
-        self.exclude_resource_type = [a.lower() for a in args.exclude_resource_type] if args.exclude_resource_type is not None else []
+        self.exclude_resource_type = [a.lower() for a in args.exclude_resource_type] \
+            if args.exclude_resource_type is not None \
+            else []
+        self.only = [a.lower() for a in args.only] \
+            if args.only is not None \
+            else []
         self.only_put = args.only_put
         self.versioned_ids = args.versioned_ids
         self.log = log
@@ -257,9 +274,15 @@ class Populator:
             "--versioned-ids", action="store_true",
             help="if provided, all resource IDs will be prefixed with the package version."
         )
-        parser.add_argument(
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument(
             "--exclude-resource-type", type=str, nargs="*",
             help="Specify resource types to ignore!"
+        )
+        group.add_argument(
+            "--only", type=str, nargs="*",
+            help="Only upload the resource types provided here, " +
+                 "e.g. only StructureDefinitions, CodeSystems and ValueSets"
         )
         parser.add_argument(
             "--registry-url", type=str, default="https://packages.simplifier.net",
@@ -296,8 +319,6 @@ class Populator:
                     if not any(ignored):
                         dependency_graph.add_edge(dep, package)
                         packages_to_download.append(dep)
-                    #else:
-                    #    self.log.warning(f"The package {dep} will not be uploaded, it is ignored.")
                 downloaded_packages.append(package)
         self.log.debug("Packages downloaded with dependencies:")
         for node in dependency_graph.nodes:
@@ -328,8 +349,29 @@ class Populator:
             for chunk in download_response.iter_content(chunk_size=8192):
                 download_fs.write(chunk)
         self.log.debug(f"Downloaded to {download_path}")
-        with tarfile.open(download_path) as download_tar_fs:
-            download_tar_fs.extractall(extract_path)
+        try:
+            with tarfile.open(download_path) as download_tar_fs:
+                for tarinfo in download_tar_fs:
+                    try:
+                        extract_dir = os.path.dirname(tarinfo.path)
+                        t_filename, t_ext = os.path.splitext(os.path.basename(tarinfo.path))
+                        slug_filename = slugify(t_filename)
+                        extract_filename = f"{slug_filename}{t_ext}"
+                        extract_to_folder = os.path.join(extract_path, extract_dir)
+                        os.makedirs(extract_to_folder, exist_ok=True)
+                        extract_to = os.path.join(extract_to_folder, extract_filename)
+                        with open(extract_to, "wb") as out_fp:
+                            tar_br: BufferedReader
+                            with download_tar_fs.extractfile(tarinfo) as tar_br:
+                                out_fp.write(tar_br.read())
+                        self.log.debug(f"Extracted {extract_to}")
+                    except (tarfile.TarError, IOError, OSError):
+                        logging.exception(f"Unhandled error extracting member '{tarinfo}' from {download_path}." +
+                                          "Extraction will continue.")
+                        continue
+        except (tarfile.TarError, IOError, OSError):
+            logging.exception(f"Unhandled error extracting archive {download_path}")
+            exit(1)
         self.log.debug(f"Extracted to {extract_path}")
         return extract_path
 
@@ -392,14 +434,21 @@ class Populator:
             # topological sort only returns the node name as str
             package_dir = node_with_info["path"]
             self.log.debug("Uploading package '%s' files from package directory: %s", package_node, package_dir)
+            self.log.debug("Uploading package '%s' files from package directory: %s", package_node, package_dir)
             fhir_files = []
             package_json = self.read_package_json(package_dir)
             package_version = package_json["version"]
             if package_json is None:
                 raise FileNotFoundError(f"package.json was not found within {package_dir}!")
             for (directory_path, _, filenames) in os.walk(package_dir):
+                file_name: str
                 for file_name in filenames:
-                    if file_name == "package.json":
+                    if os.path.basename(directory_path) == "other":  # other directory SHALL be ignored
+                        # https://wiki.hl7.org/FHIR_NPM_Package_Spec#Format
+                        continue
+                    if file_name == "package.json" or file_name == "index.json":
+                        continue
+                    elif file_name.endswith(".sch"):  # FHIR Shorthand
                         continue
                     full_path = os.path.join(directory_path, file_name)
                     encoded_path = full_path.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
@@ -410,11 +459,13 @@ class Populator:
                     try:
                         fhir_resource = FhirResource(encoded_path, package_version, self.args.only_put,
                                                      self.args.versioned_ids)
-                        if self.args.exclude_resource_type is not None \
-                                and fhir_resource.resource_type.lower() in self.args.exclude_resource_type:
+                        r_type = fhir_resource.resource_type.lower()
+                        if (r_type in self.args.exclude_resource_type) or (
+                                len(self.args.only) != 0 and r_type not in self.args.only):
                             self.log.debug(
-                                f"Resource {encoded_path} is of resource type {fhir_resource.resource_type}" +
+                                f"Resource {encoded_path} is of resource type {r_type}" +
                                 f" and is skipped.")
+                            continue
                         else:
                             fhir_files.append(fhir_resource)
                     except (LookupError, json.decoder.JSONDecodeError):
@@ -457,11 +508,12 @@ class Populator:
                     method=request_method,
                     url=upload_url,
                     headers={
-                        "Content-Type": content_type
+                        "Content-Type": content_type,
+                        "Accept": "application/json"
                     },
                     data=payload
                 ).prepare()
-                self.log.debug(f"uploading to {upload_url} (content type: {content_type})")
+                self.log.info(f"uploading to {upload_url} (content type: {content_type})")
                 upload_result = self.request_session.send(upload_request)
                 if 200 <= upload_result.status_code < 300:
                     self.log.debug(f"uploaded {fhir_file.resource_type} with status {upload_result.status_code}")
