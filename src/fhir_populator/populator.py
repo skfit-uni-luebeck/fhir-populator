@@ -113,6 +113,13 @@ class FhirResource:
     def get_argument_xml(self, argument: str, raise_on_missing: bool = False):
         tree = ElementTree.parse(self.file_path)
         root = tree.getroot()
+        if argument == "resourceType":
+            # resource type is provided as the name of the tag, instead of as an attribute
+            tag = root.tag
+            if "{" in tag:
+                return tag.split("}")[1]  # Tag name without namespace
+            else:
+                return tag  # Tag does not seem to contain a namespace
         res_node = root.find(argument)
         if res_node is None and raise_on_missing:
             raise LookupError(f"the resource {self.file_path} does not have an attribute {argument}!")
@@ -161,6 +168,7 @@ class PopulatorSettings:
     only_put: bool
     versioned_ids: bool
     registry_url: str
+    only: List[str]
     log: logging.Logger
 
     def __init__(self, args: argparse.Namespace, log: logging.Logger):
@@ -176,6 +184,9 @@ class PopulatorSettings:
         self.log_level = args.log_level
         self.exclude_resource_type = [a.lower() for a in args.exclude_resource_type] \
             if args.exclude_resource_type is not None \
+            else []
+        self.only = [a.lower() for a in args.only] \
+            if args.only is not None \
             else []
         self.only_put = args.only_put
         self.versioned_ids = args.versioned_ids
@@ -263,9 +274,15 @@ class Populator:
             "--versioned-ids", action="store_true",
             help="if provided, all resource IDs will be prefixed with the package version."
         )
-        parser.add_argument(
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument(
             "--exclude-resource-type", type=str, nargs="*",
             help="Specify resource types to ignore!"
+        )
+        group.add_argument(
+            "--only", type=str, nargs="*",
+            help="Only upload the resource types provided here, " +
+                 "e.g. only StructureDefinitions, CodeSystems and ValueSets"
         )
         parser.add_argument(
             "--registry-url", type=str, default="https://packages.simplifier.net",
@@ -417,14 +434,21 @@ class Populator:
             # topological sort only returns the node name as str
             package_dir = node_with_info["path"]
             self.log.debug("Uploading package '%s' files from package directory: %s", package_node, package_dir)
+            self.log.debug("Uploading package '%s' files from package directory: %s", package_node, package_dir)
             fhir_files = []
             package_json = self.read_package_json(package_dir)
             package_version = package_json["version"]
             if package_json is None:
                 raise FileNotFoundError(f"package.json was not found within {package_dir}!")
             for (directory_path, _, filenames) in os.walk(package_dir):
+                file_name: str
                 for file_name in filenames:
-                    if file_name == "package.json":
+                    if os.path.basename(directory_path) == "other":  # other directory SHALL be ignored
+                        # https://wiki.hl7.org/FHIR_NPM_Package_Spec#Format
+                        continue
+                    if file_name == "package.json" or file_name == "index.json":
+                        continue
+                    elif file_name.endswith(".sch"):  # FHIR Shorthand
                         continue
                     full_path = os.path.join(directory_path, file_name)
                     encoded_path = full_path.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
@@ -435,11 +459,13 @@ class Populator:
                     try:
                         fhir_resource = FhirResource(encoded_path, package_version, self.args.only_put,
                                                      self.args.versioned_ids)
-                        if self.args.exclude_resource_type is not None \
-                                and fhir_resource.resource_type.lower() in self.args.exclude_resource_type:
+                        r_type = fhir_resource.resource_type.lower()
+                        if (r_type in self.args.exclude_resource_type) or (
+                                len(self.args.only) != 0 and r_type not in self.args.only):
                             self.log.debug(
-                                f"Resource {encoded_path} is of resource type {fhir_resource.resource_type}" +
+                                f"Resource {encoded_path} is of resource type {r_type}" +
                                 f" and is skipped.")
+                            continue
                         else:
                             fhir_files.append(fhir_resource)
                     except (LookupError, json.decoder.JSONDecodeError):
@@ -482,7 +508,8 @@ class Populator:
                     method=request_method,
                     url=upload_url,
                     headers={
-                        "Content-Type": content_type
+                        "Content-Type": content_type,
+                        "Accept": "application/json"
                     },
                     data=payload
                 ).prepare()
