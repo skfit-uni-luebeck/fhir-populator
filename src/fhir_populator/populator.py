@@ -161,6 +161,7 @@ class PopulatorSettings:
     only_put: bool
     versioned_ids: bool
     registry_url: str
+    only: List[str]
     log: logging.Logger
 
     def __init__(self, args: argparse.Namespace, log: logging.Logger):
@@ -176,6 +177,9 @@ class PopulatorSettings:
         self.log_level = args.log_level
         self.exclude_resource_type = [a.lower() for a in args.exclude_resource_type] \
             if args.exclude_resource_type is not None \
+            else []
+        self.only = [a.lower() for a in args.only] \
+            if args.only is not None \
             else []
         self.only_put = args.only_put
         self.versioned_ids = args.versioned_ids
@@ -263,9 +267,15 @@ class Populator:
             "--versioned-ids", action="store_true",
             help="if provided, all resource IDs will be prefixed with the package version."
         )
-        parser.add_argument(
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument(
             "--exclude-resource-type", type=str, nargs="*",
             help="Specify resource types to ignore!"
+        )
+        group.add_argument(
+            "--only", type=str, nargs="*",
+            help="Only upload the resource types provided here, " +
+                 "e.g. only StructureDefinitions, CodeSystems and ValueSets"
         )
         parser.add_argument(
             "--registry-url", type=str, default="https://packages.simplifier.net",
@@ -417,6 +427,7 @@ class Populator:
             # topological sort only returns the node name as str
             package_dir = node_with_info["path"]
             self.log.debug("Uploading package '%s' files from package directory: %s", package_node, package_dir)
+            self.log.debug("Uploading package '%s' files from package directory: %s", package_node, package_dir)
             fhir_files = []
             package_json = self.read_package_json(package_dir)
             package_version = package_json["version"]
@@ -435,10 +446,11 @@ class Populator:
                     try:
                         fhir_resource = FhirResource(encoded_path, package_version, self.args.only_put,
                                                      self.args.versioned_ids)
-                        if self.args.exclude_resource_type is not None \
-                                and fhir_resource.resource_type.lower() in self.args.exclude_resource_type:
+                        r_type = fhir_resource.resource_type.lower()
+                        if (r_type in self.args.exclude_resource_type) or (
+                                len(self.args.only) != 0 and r_type not in self.args.only):
                             self.log.debug(
-                                f"Resource {encoded_path} is of resource type {fhir_resource.resource_type}" +
+                                f"Resource {encoded_path} is of resource type {r_type}" +
                                 f" and is skipped.")
                         else:
                             fhir_files.append(fhir_resource)
