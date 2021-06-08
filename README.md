@@ -41,12 +41,12 @@ and the help will be printed:
 usage: fhir_populator [-h] --endpoint ENDPOINT [--authorization-header AUTHORIZATION_HEADER] [--log-file LOG_FILE]
                       [--get-dependencies] [--non-interactive] [--include-examples]
                       [--log-level {INFO,WARNING,DEBUG,ERROR}] [--rewrite-versions] [--only-put] [--versioned-ids]
-                      [--exclude-resource-type [EXCLUDE_RESOURCE_TYPE ...]] [--registry-url REGISTRY_URL]
-                      [--package PACKAGES [PACKAGES ...]]
+                      [--exclude-resource-type [EXCLUDE_RESOURCE_TYPE ...] | --only [ONLY ...]]
+                      [--registry-url REGISTRY_URL] [--package PACKAGES [PACKAGES ...]]
 
 optional arguments:
   -h, --help            show this help message and exit
-  --https://wiki.hl7.org/FHIR_NPM_Package_Spec ENDPOINT   The FHIR server REST endpoint (default: None)
+  --endpoint ENDPOINT   The FHIR server REST endpoint (default: None)
   --authorization-header AUTHORIZATION_HEADER
                         an authorization header to use for uploading. If none, nothing will be sent. (default: None)
   --log-file LOG_FILE   A log file path (default: None)
@@ -65,6 +65,8 @@ optional arguments:
   --versioned-ids       if provided, all resource IDs will be prefixed with the package version. (default: False)
   --exclude-resource-type [EXCLUDE_RESOURCE_TYPE ...]
                         Specify resource types to ignore! (default: None)
+  --only [ONLY ...]     Only upload the resource types provided here, e.g. only StructureDefinitions, CodeSystems and
+                        ValueSets (default: None)
   --registry-url REGISTRY_URL
                         The FHIR registry url, Simplifier by default (default: https://packages.simplifier.net)
   --package PACKAGES [PACKAGES ...]
@@ -144,4 +146,4 @@ If you want to customize the program, you should:
 | Version | Date | Changes |
 |-|-|-|
 | v1.0.10 | 2021-06-03 | Initial release |
-| v1.1.0  | 2021-06-08 | - handle Unicode filenames, especially on BSD/macOS (#1)<br>- do not serialize null ID for POST (#2)<br>-include option for only certain resource types(#6)<br>fix XML handling (#6)<br>add LICENSE |
+| v1.1.0  | 2021-06-08 | - handle Unicode filenames, especially on BSD/macOS (#1)<br>- do not serialize null ID for POST (#2)<br>- include option for only certain resource types(#6)<br>- fix XML handling (#6)<br>- add LICENSE |
