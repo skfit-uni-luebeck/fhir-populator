@@ -113,6 +113,13 @@ class FhirResource:
     def get_argument_xml(self, argument: str, raise_on_missing: bool = False):
         tree = ElementTree.parse(self.file_path)
         root = tree.getroot()
+        if argument == "resourceType":
+            # resource type is provided as the name of the tag, instead of as an attribute
+            tag = root.tag
+            if "{" in tag:
+                return tag.split("}")[1]  # Tag name without namespace
+            else:
+                return tag  # Tag does not seem to contain a namespace
         res_node = root.find(argument)
         if res_node is None and raise_on_missing:
             raise LookupError(f"the resource {self.file_path} does not have an attribute {argument}!")
@@ -434,8 +441,14 @@ class Populator:
             if package_json is None:
                 raise FileNotFoundError(f"package.json was not found within {package_dir}!")
             for (directory_path, _, filenames) in os.walk(package_dir):
+                file_name: str
                 for file_name in filenames:
-                    if file_name == "package.json":
+                    if os.path.basename(directory_path) == "other":  # other directory SHALL be ignored
+                        # https://wiki.hl7.org/FHIR_NPM_Package_Spec#Format
+                        continue
+                    if file_name == "package.json" or file_name == "index.json":
+                        continue
+                    elif file_name.endswith(".sch"):  # FHIR Shorthand
                         continue
                     full_path = os.path.join(directory_path, file_name)
                     encoded_path = full_path.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
@@ -452,6 +465,7 @@ class Populator:
                             self.log.debug(
                                 f"Resource {encoded_path} is of resource type {r_type}" +
                                 f" and is skipped.")
+                            continue
                         else:
                             fhir_files.append(fhir_resource)
                     except (LookupError, json.decoder.JSONDecodeError):
@@ -494,7 +508,8 @@ class Populator:
                     method=request_method,
                     url=upload_url,
                     headers={
-                        "Content-Type": content_type
+                        "Content-Type": content_type,
+                        "Accept": "application/json"
                     },
                     data=payload
                 ).prepare()
