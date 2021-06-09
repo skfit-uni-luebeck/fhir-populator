@@ -21,6 +21,8 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
+On Windows without Windows Subsystem for Linux, you will need to change the last command to `.venv\bin\activate.bat`.
+
 These commands will create a new directory, visit it, create the virtual environment, and activate it.
 
 Next, load the package from PyPI:
@@ -119,7 +121,7 @@ There are a number of configuration options, which are (hopefully) mostly self-e
 * `--non-interactive`: If provided, errors returned by the FHIR server will be ignored, and only a warning will be printed out.
 * `--only-put`: FHIR requires that IDs are present for all resources that are uploaded via HTTP PUT. Hence, if IDs are missing, a HTTP POST request is used by the script. This does not generate stable, or nice, IDs by default. You can provide this parameter to make the script generate IDs from the file name of the resource, which should be stable across reruns. This uses a "slugified" version of the filename without unsafe characters, and restricted to 64 characters, as per the specification.
 * `--registry-url`: While the script was only tested using the Simplifier registry, it should be compatible to other implementations of the [FHIR NPM Package Spec](https://wiki.hl7.org/FHIR_NPM_Package_Spec), which is implemented by the Simplifier software. You can provide the endpoint of an alternative registry hence.
-* `--rewrite-versions`: If provided, all `version` attributes of the resources will be rewritten to match the version in the `package.json`, to separate these definitions from previous versions. You will need to think about the versions numbers you use when communicating with others, who might not use the same versions - ⚠️ use with caution! ⚠️
+* `--rewrite-versions`: If provided, all `version` attributes of the resources will be rewritten to match the version in the `package.json`, to separate these definitions from previous versions. You will need to think about the versions numbers you use when communicating with others, who might not use the same versions - ⚠️  use with caution! ⚠️
 * `--versioned-ids`: To separate versions of the resources on the same FHIR server, you can override the IDs provided in the resources, by including the slugified version of the package in the ID. If combined with the `--only-put` switch, this will work the same, versioning existing IDs, and slugifying + versioning the filename of resources without IDs.
 
 ## Updating
@@ -147,3 +149,4 @@ If you want to customize the program, you should:
 |-|-|-|
 | v1.0.10 | 2021-06-03 | Initial release |
 | v1.1.0  | 2021-06-08 | - handle Unicode filenames, especially on BSD/macOS (#1)<br>- do not serialize null ID for POST (#2)<br>- include option for only certain resource types(#6)<br>- fix XML handling (#6)<br>- add LICENSE |
+| v1.1.1  | 2021-06-09 | - explicitly open files with UTF-8 encoding (#12)<br>- ignore pycharm and vscode (#11)|
