@@ -1,5 +1,0 @@
-inquirer~=2.7.0
-networkx~=2.5.1
-requests~=2.25.1
-rich~=10.2.2
-python-slugify~=5.0.2
