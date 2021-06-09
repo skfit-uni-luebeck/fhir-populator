@@ -62,7 +62,7 @@ class FhirResource:
 
     def get_payload(self, rewrite_version: Optional[str] = None) -> str:
         # if rewrite_version is None:
-        #     with open(self.file_path, "r") as fs:
+        #     with open(self.file_path, "r", encoding="utf8") as fs:
         #         return fs.read()
         if self.type == FhirResource.FileType.XML:
             return self.get_payload_rewrite_xml(rewrite_version)
@@ -79,7 +79,7 @@ class FhirResource:
         https://codereview.stackexchange.com/a/137926
         :return: FhirResource.FileType enum member
         """
-        with open(self.file_path) as unknown_file:
+        with open(self.file_path, encoding="utf8") as unknown_file:
             c = unknown_file.read(1)
             if c != '<':
                 return FhirResource.FileType.JSON
@@ -101,7 +101,7 @@ class FhirResource:
         return ElementTree.tostring(root, encoding="unicode")
 
     def get_payload_rewrite_json(self, rewrite_version: Optional[str], indent: int = 2) -> str:
-        with open(self.file_path, "r") as jf:
+        with open(self.file_path, "r", encoding="utf8") as jf:
             json_dict = json.load(jf)
         if rewrite_version is not None:
             if "version" in json_dict:
@@ -129,7 +129,7 @@ class FhirResource:
             return res_node.text
 
     def get_argument_json(self, argument: str, raise_on_missing: bool = False) -> Optional[str]:
-        with open(self.file_path) as jf:
+        with open(self.file_path, encoding="utf8") as jf:
             json_dict = json.load(jf)
             if argument not in json_dict and raise_on_missing:
                 raise LookupError(f"the resource {self.file_path} does not have an attribute {argument}!")
@@ -567,7 +567,7 @@ class Populator:
         if len(package_json_file) != 1:
             self.log.error(f"Within the package {package_path}, one and only one package.json must be present")
             return None
-        with open(package_json_file[0]) as jf:
+        with open(package_json_file[0], encoding="utf8") as jf:
             package_json = json.load(jf)
         return package_json
 
