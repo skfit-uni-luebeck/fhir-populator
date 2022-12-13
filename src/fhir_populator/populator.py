@@ -168,6 +168,11 @@ class PopulatorSettings:
     only_put: bool
     versioned_ids: bool
     registry_url: str
+    http_proxy: Optional[str]
+    https_proxy: Optional[str]
+    has_proxy: bool
+    proxy_verify: Optional[str]
+    proxy_for_fhir: bool
     only: List[str]
     log: logging.Logger
 
@@ -182,6 +187,11 @@ class PopulatorSettings:
         self.include_examples = args.include_examples
         self.rewrite_versions = args.rewrite_versions
         self.log_level = args.log_level
+        self.http_proxy = args.http_proxy
+        self.https_proxy = args.https_proxy
+        self.proxy_verify = args.proxy_verify
+        self.proxy_for_fhir = args.proxy_for_fhir
+        self.has_proxy = self.http_proxy is not None or self.https_proxy is not None
         self.exclude_resource_type = [a.lower() for a in args.exclude_resource_type] \
             if args.exclude_resource_type is not None \
             else []
@@ -216,12 +226,8 @@ class Populator:
         os.mkdir(self.download_dir)
         self.extract_dir = os.path.join(self.temp_dir, "extract")
         os.mkdir(self.extract_dir)
-        self.request_session = requests.Session()
-        if self.args.authorization_header is not None:
-            self.request_session.headers.update({
-                "Authorization": self.args.authorization_header
-            })
-            self.log.debug(f"Using Authorization header: {self.args.authorization_header[:10]}...")
+        self.fhir_requests_session = self.configure_session(configure_auth=True,
+                                                            configure_proxy=self.args.proxy_for_fhir)
 
     def __del__(self):
         if self.log is not None:
@@ -229,6 +235,26 @@ class Populator:
             self.log.debug(f"Deleting temp directory: {self.temp_dir}")
         if self.temp_dir is not None:
             shutil.rmtree(self.temp_dir)
+
+    def configure_session(self, configure_auth: bool, configure_proxy: bool) -> requests.Session:
+        session = requests.Session()
+        if configure_auth:
+            if self.args.authorization_header is not None:
+                self.fhir_requests_session.headers.update({
+                    "Authorization": self.args.authorization_header
+                })
+                self.log.debug(f"Using Authorization header: {self.args.authorization_header[:5]}...")
+        if configure_proxy:
+            if self.args.has_proxy:
+                session.proxies = {
+                    "http": self.args.http_proxy,
+                }
+                session.verify = self.args.proxy_verify
+                if self.args.https_proxy is not None:
+                    session.proxies["https"] = self.args.https_proxy
+                else:
+                    session.proxies["https"] = self.args.http_proxy
+        return session
 
     @staticmethod
     def parse_args() -> argparse.Namespace:
@@ -274,6 +300,20 @@ class Populator:
             "--versioned-ids", action="store_true",
             help="if provided, all resource IDs will be prefixed with the package version."
         )
+        parser.add_argument("--http-proxy", help="A HTTP proxy to use when requesting FHIR packages")
+        parser.add_argument("--https-proxy", help="A HTTPS proxy to use when requesting FHIR packages; if null and "
+                                                  "http-proxy is not none, the HTTP proxy is used.")
+        parser.add_argument("--proxy-verify",
+                            help="Path to a openSSL certificate (chain) for trusting HTTPS connections to your proxy, "
+                                 "HTTPs connections without this will likely not work!")
+        parser.add_argument("--proxy-for-fhir", action="store_true")
+        parser.add_argument(
+            "--package", nargs="+", type=str, dest="packages",
+            help="Specification for the package to download and push to the FHIR server. " +
+                 "You can specify more than one package. " +
+                 "Use the syntax 'package@version', or leave out the version to use the latest package " +
+                 "available on the registry."
+        )
         group = parser.add_mutually_exclusive_group()
         group.add_argument(
             "--exclude-resource-type", type=str, nargs="*",
@@ -288,17 +328,12 @@ class Populator:
             "--registry-url", type=str, default="https://packages.simplifier.net",
             help="The FHIR registry url, Simplifier by default"
         )
-        parser.add_argument(
-            "--package", nargs="+", type=str, dest="packages",
-            help="Specification for the package to download and push to the FHIR server. " +
-                 "You can specify more than one package. " +
-                 "Use the syntax 'package@version', or leave out the version to use the latest package " +
-                 "available on the registry."
-        )
         return parser.parse_args()
 
     def download_packages(self, packages: List[str]) -> nx.DiGraph:
         untar_folders = []
+        download_session = self.configure_session(configure_auth=False, configure_proxy=True)
+
         get_deps = self.args.get_dependencies
         dependency_graph = nx.DiGraph()
         packages_to_download = list(packages)
@@ -309,7 +344,7 @@ class Populator:
                 self.log.debug(f"Package {package} is already downloaded.")
                 continue
             self.log.info(f"Downloading package with spec {package}")
-            package_path = self.download_untar_package(package_name=package)
+            package_path = self.download_untar_package(package_name=package, session=download_session)
             untar_folders.append(package_path)
             dependency_graph.add_node(package, path=package_path)
             if get_deps:
@@ -325,10 +360,11 @@ class Populator:
             self.log.debug(f" - {node}")
         return dependency_graph
 
-    def download_untar_package(self, package_name: str) -> str:
+    def download_untar_package(self, package_name: str, session: requests.Session) -> str:
         """
         download a package from the registry
         :param package_name:
+        :param session:
         :return:
         """
         if '@' in package_name:
@@ -344,7 +380,7 @@ class Populator:
             method="GET",
             url=request_url
         ).prepare()
-        download_response = self.request_session.send(download_request, stream=True)
+        download_response = session.send(download_request, stream=True)
         with open(download_path, "wb") as download_fs:
             for chunk in download_response.iter_content(chunk_size=8192):
                 download_fs.write(chunk)
@@ -381,7 +417,7 @@ class Populator:
             method="GET",
             url=lookup_url
         ).prepare()
-        response = self.request_session.send(lookup_request)
+        response = self.fhir_requests_session.send(lookup_request)
         versions = [v["version"] for v in response.json()["versions"].values()]
         self.log.debug(f"Available versions for '{package_name}': {versions}")
         last_version = versions[-1]
@@ -514,7 +550,7 @@ class Populator:
                     data=payload
                 ).prepare()
                 self.log.info(f"uploading to {upload_url} (content type: {content_type})")
-                upload_result = self.request_session.send(upload_request)
+                upload_result = self.fhir_requests_session.send(upload_request)
                 if 200 <= upload_result.status_code < 300:
                     self.log.debug(f"uploaded {fhir_file.resource_type} with status {upload_result.status_code}")
                 else:
