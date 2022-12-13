@@ -12,7 +12,7 @@ The script is written in Python 3 and [available on PyPI](https://pypi.org/proje
 
 ## Installation
 
-As the package is available on the Python package index, you can install it quickly into a Virtual Environment. First, you may need to create a folder for FHIR populator and an Virtual Environment (all commands are for Unix-based OS and may need tweaking on Windows):
+As the package is available on the Python package index, you can install it quickly into a Virtual Environment. First, you may need to create a folder for FHIR populator and a Virtual Environment (all commands are for Unix-based OS and may need tweaking on Windows):
 
 ```bash
 mkdir fhir-populator
@@ -87,7 +87,7 @@ To try out the program, you can spin up a FHIR server, such as [HAPI FHIR JPA Se
 python -m fhir_populator --endpoint http://localhost:8080/fhir --get-dependencies --package de.gecco
 ```
 
-As this example does not a specify a version of the `de.gecco` package, the latest version of the package will first be determined from the Simplifier API. You can also specify a version using the syntax `package@version`:
+As this example does not specify a version of the `de.gecco` package, the latest version of the package will first be determined from the Simplifier API. You can also specify a version using the syntax `package@version`:
 
 ```bash
 python -m fhir_populator --endpoint http://localhost:8080/fhir --get-dependencies --package de.gecco@1.0.3
@@ -105,8 +105,7 @@ The script is broken into multiple steps:
 
 1. All unversioned package references are converted to versioned references, by retrieving the package metadata from the NPM registry.
 2. The packages are downloaded as Tarballs into a temporary directory (under `/tmp` for Unix systems), and extracted there
-3. After each package is downloaded, the `package.json` is examined, and dependencies are added to the download queue, if desired.
-  * During this download, a dependency graph is built from the downloaded packages, to make sure that every package is uploaded after its dependencies
+3. After each package is downloaded, the `package.json` is examined, and dependencies are added to the download queue, if desired. During this download, a dependency graph is built from the downloaded packages, to make sure that every package is uploaded after its dependencies
 4. The packages are uploaded, file-by-file, to the FHIR server. This uses the topological sort of the directed dependency graph, to maintain consistency. Also, the files are uploaded in logical versions (e.g. `CodeSystem` before `ValueSet` before `StructureDefinition` before `Patient` etc.)
 5. If the FHIR server returns an error, the user is prompted interactively for input.
 6. When all resources are uploaded (or if the user aborts execution with *CTRL-C*), the temporary directory is recursively deleted.
@@ -119,10 +118,18 @@ There are a number of configuration options, which are (hopefully) mostly self-e
 * `--exclude-resource-type`: You can skip resource types, e.g. `--exclude-resource-type CodeSystem ValueSet ConceptMap`. This is not case-sensitive, the lower-case version of the resource type will be matched against the lower-case parameter list.
 * `--include-examples`: Examples in FHIR packages are great, but often not consistent across packages. For example, an `Observation` example might reference `Patient/example`, and this patient is nowhere to be found in the package, or its dependencies. Some FHIR servers (such as HAPI JPA Server) validate references on CREATE and return errors for missing references. Hence, examples (files in the `examples` folder of the package, as per the spec) are ignored by default.
 * `--non-interactive`: If provided, errors returned by the FHIR server will be ignored, and only a warning will be printed out.
-* `--only-put`: FHIR requires that IDs are present for all resources that are uploaded via HTTP PUT. Hence, if IDs are missing, a HTTP POST request is used by the script. This does not generate stable, or nice, IDs by default. You can provide this parameter to make the script generate IDs from the file name of the resource, which should be stable across reruns. This uses a "slugified" version of the filename without unsafe characters, and restricted to 64 characters, as per the specification.
+* `--only-put`: FHIR requires that IDs are present for all resources that are uploaded via HTTP PUT. Hence, if IDs are missing, an HTTP POST request is used by the script. This does not generate stable, or nice, IDs by default. You can provide this parameter to make the script generate IDs from the file name of the resource, which should be stable across reruns. This uses a "slugified" version of the filename without unsafe characters, and restricted to 64 characters, as per the specification.
 * `--registry-url`: While the script was only tested using the Simplifier registry, it should be compatible to other implementations of the [FHIR NPM Package Spec](https://wiki.hl7.org/FHIR_NPM_Package_Spec), which is implemented by the Simplifier software. You can provide the endpoint of an alternative registry hence.
 * `--rewrite-versions`: If provided, all `version` attributes of the resources will be rewritten to match the version in the `package.json`, to separate these definitions from previous versions. You will need to think about the versions numbers you use when communicating with others, who might not use the same versions - ⚠️  use with caution! ⚠️
 * `--versioned-ids`: To separate versions of the resources on the same FHIR server, you can override the IDs provided in the resources, by including the slugified version of the package in the ID. If combined with the `--only-put` switch, this will work the same, versioning existing IDs, and slugifying + versioning the filename of resources without IDs.
+
+## Proxy:
+
+* `--http-proxy`: URL of your HTTP proxy, may optionally include credentials (c.f. [the Requests documentation](https://requests.readthedocs.io/en/latest/user/advanced/#proxies))
+* `--https-proxy`: URL for HTTPS requests, if not provided, the HTTP proxy is used instead
+* `--proxy-for-fhir`: If provided, the proxy is also used for requests to your FHIR server
+* `--proxy-verify`: If provided, this public key (-chain) on your disk is used for validating the re-encrypted traffic to your proxy
+* `--proxy-for-fhir`: If provided, the proxy is also used for FHIR requests, not only for NPM requests
 
 ## Updating
 
@@ -141,7 +148,7 @@ If you want to customize the program, you should:
 3. Install the package locally, using `pip install .`
 4. Customize the script. Re-run step 3 if you change the script.
 5. `python -m fhir_populator`, as before.
-6. Create a issue and pull request in the GitHub Repo! We welcome contributions!
+6. Create an issue and pull request in the GitHub Repo! We welcome contributions!
 
 ## Changelog
 
