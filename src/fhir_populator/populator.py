@@ -226,7 +226,8 @@ class Populator:
         os.mkdir(self.download_dir)
         self.extract_dir = os.path.join(self.temp_dir, "extract")
         os.mkdir(self.extract_dir)
-        self.fhir_requests_session = self.configure_session(use_auth=True, use_proxy=self.args.proxy_for_fhir)
+        self.fhir_requests_session = self.configure_session(configure_auth=True,
+                                                            configure_proxy=self.args.proxy_for_fhir)
 
     def __del__(self):
         if self.log is not None:
@@ -235,15 +236,15 @@ class Populator:
         if self.temp_dir is not None:
             shutil.rmtree(self.temp_dir)
 
-    def configure_session(self, use_auth: bool, use_proxy: bool) -> requests.Session:
+    def configure_session(self, configure_auth: bool, configure_proxy: bool) -> requests.Session:
         session = requests.Session()
-        if use_auth:
+        if configure_auth:
             if self.args.authorization_header is not None:
                 self.fhir_requests_session.headers.update({
                     "Authorization": self.args.authorization_header
                 })
                 self.log.debug(f"Using Authorization header: {self.args.authorization_header[:5]}...")
-        if use_proxy:
+        if configure_proxy:
             if self.args.has_proxy:
                 session.proxies = {
                     "http": self.args.http_proxy,
@@ -331,7 +332,7 @@ class Populator:
 
     def download_packages(self, packages: List[str]) -> nx.DiGraph:
         untar_folders = []
-        download_session = self.configure_session(use_auth=False, use_proxy=True)
+        download_session = self.configure_session(configure_auth=False, configure_proxy=True)
 
         get_deps = self.args.get_dependencies
         dependency_graph = nx.DiGraph()
