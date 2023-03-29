@@ -45,6 +45,7 @@ usage: fhir_populator [-h] --endpoint ENDPOINT [--authorization-header AUTHORIZA
                       [--log-level {INFO,WARNING,DEBUG,ERROR}] [--rewrite-versions] [--only-put] [--versioned-ids]
                       [--exclude-resource-type [EXCLUDE_RESOURCE_TYPE ...] | --only [ONLY ...]]
                       [--registry-url REGISTRY_URL] [--package PACKAGES [PACKAGES ...]]
+                      [--persistate] [--from-persistence] [--persistence-dir PERSISTANCE_DIR]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -75,6 +76,9 @@ optional arguments:
                         Specification for the package to download and push to the FHIR server. You can specify more
                         than one package. Use the syntax 'package@version', or leave out the version to use the
                         latest package available on the registry. (default: None)
+  --persistate          if provided the package will be persistated in the persistate-dir
+  --persistence-dir      directory where the persistated packages will be stored or loaded from
+  --from-persistence     if provided the package will be loaded from the persistate-dir                      
 ```
 
 There are a lot of command line options that can be used to customize the behaviour of the program.

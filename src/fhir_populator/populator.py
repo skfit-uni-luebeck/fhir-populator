@@ -155,7 +155,7 @@ class FhirResource:
 
 
 class PopulatorSettings:
-    endpoint: str
+    endpoint: Optional[str]
     authorization_header: Optional[str]
     log_file: Optional[str]
     get_dependencies: bool
@@ -175,6 +175,9 @@ class PopulatorSettings:
     proxy_for_fhir: bool
     only: List[str]
     log: logging.Logger
+    persistence_dir: Optional[str]
+    persistate: bool
+    from_persistence: bool
 
     def __init__(self, args: argparse.Namespace, log: logging.Logger):
         self.registry_url = args.registry_url.rstrip("/")
@@ -200,6 +203,9 @@ class PopulatorSettings:
             else []
         self.only_put = args.only_put
         self.versioned_ids = args.versioned_ids
+        self.persistence_dir = args.persistence_dir
+        self.persistate = args.persistate
+        self.from_persistence = args.from_persistence
         self.log = log
         self.print_args(args)
 
@@ -263,7 +269,7 @@ class Populator:
             formatter_class=argparse.ArgumentDefaultsHelpFormatter
         )
         parser.add_argument(
-            "--endpoint", required=True, type=str,
+            "--endpoint", type=str, default="",
             help="The FHIR server REST endpoint"
         )
         parser.add_argument(
@@ -327,6 +333,18 @@ class Populator:
         parser.add_argument(
             "--registry-url", type=str, default="https://packages.simplifier.net",
             help="The FHIR registry url, Simplifier by default"
+        )
+        parser.add_argument(
+            "--persistence-dir", type=str, default=None,
+            help="If provided, the downloaded packages will be stored here."
+        )
+        parser.add_argument(
+            "--from-persistence", action="store_true",
+            help="If provided, the packages will be loaded from the persistence directory instead of being downloaded."
+        )
+        parser.add_argument(
+            "--persistate", action="store_true",
+            help="If provided, the files downloaded will be persistated."
         )
         return parser.parse_args()
 
@@ -424,9 +442,79 @@ class Populator:
         self.log.debug(f"Latest version: {last_version}")
         return last_version
 
+    def persistate(self, dependency_graph):
+        def copy_directory_structure(src, dst):
+            """
+            Recursively creates directories from src to dst
+            """
+            for root, dirs, files in os.walk(src):
+                for directory in dirs:
+                    src_dir = os.path.join(root, directory)
+                    dst_dir = os.path.join(dst, os.path.relpath(src_dir, src))
+                    if not os.path.exists(dst_dir):
+                        os.makedirs(dst_dir)
+
+        def copy_files_with_structure(src, dst):
+            """
+            Copies files along with the directory structure from src to dst
+            """
+            copy_directory_structure(src, dst)
+            for root, dirs, files in os.walk(src):
+                for file in files:
+                    src_file = os.path.join(root, file)
+                    dst_file = os.path.join(dst, os.path.relpath(src_file, src))
+                    shutil.copy2(src_file, dst_file)
+
+        persistence_dir = self.args.persistence_dir
+        # copy files to persistence_dir from extract_dir
+        copy_files_with_structure(self.extract_dir, persistence_dir)
+
+        # update the dependency graph with the new paths
+        for node in dependency_graph.nodes:
+            node_path = dependency_graph.nodes[node]["path"]
+            node_path = node_path.replace(self.extract_dir, "")
+            # remove leading slash if present
+            if node_path.startswith("/") or node_path.startswith("\\"):
+                node_path = node_path[1:]
+            elif node_path.startswith(r"\\") or node_path.startswith(r"//"):
+                node_path = node_path[2:]
+            dependency_graph.nodes[node]["path"] = node_path
+
+        # dump the dependency graph to a file in persistence_dir
+        if persistence_dir is not None:
+            graph_path = os.path.join(persistence_dir, "dependency_graph.json")
+            with open(graph_path, "w") as graph_fs:
+                json.dump(nx.node_link_data(dependency_graph), graph_fs)
+
+    def load_persisted(self):
+        persistence_dir = self.args.persistence_dir
+        graph_path = os.path.join(persistence_dir, "dependency_graph.json")
+        with open(graph_path, "r") as graph_fs:
+            dependency_graph = nx.node_link_graph(json.load(graph_fs))
+            # update the dependency graph with the new paths
+            for node in dependency_graph.nodes:
+                node_path = dependency_graph.nodes[node]["path"]
+                node_path = os.path.join(persistence_dir, node_path)
+                dependency_graph.nodes[node]["path"] = node_path
+        return dependency_graph
+
     def populate(self) -> None:
-        packages = self.resolve_package_versions()
-        dependency_graph = self.download_packages(packages)
+        packages = None
+        if self.args.packages:
+            packages = self.resolve_package_versions()
+        dependency_graph = None
+        if packages and not self.args.from_persistence:
+            dependency_graph = self.download_packages(packages)
+            if self.args.persistate:
+                self.persistate(dependency_graph)
+        if self.args.from_persistence:
+            if self.args.persistence_dir is None:
+                self.log.error("Cannot load persisted data without a persistence directory")
+                exit(1)
+            dependency_graph = self.load_persisted()
+        if dependency_graph is None:
+            self.log.error("No dependency graph was generated")
+            exit(1)
         self.upload_resources(dependency_graph)
         self.log.info("UPLOAD COMPLETE")
 
