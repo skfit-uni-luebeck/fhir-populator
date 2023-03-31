@@ -16,6 +16,7 @@ import networkx as nx
 import requests
 from rich.logging import RichHandler
 from slugify import slugify
+import semver
 
 
 class FhirResource:
@@ -176,12 +177,12 @@ class PopulatorSettings:
     only: List[str]
     log: logging.Logger
     persistence_dir: Optional[str]
-    persistate: bool
+    persist: bool
     from_persistence: bool
 
     def __init__(self, args: argparse.Namespace, log: logging.Logger):
         self.registry_url = args.registry_url.rstrip("/")
-        self.endpoint = args.endpoint.rstrip("/")
+        self.endpoint = args.endpoint.rstrip("/") if args.endpoint is not None else None
         self.authorization_header = args.authorization_header
         self.log_file = args.log_file
         self.get_dependencies = args.get_dependencies
@@ -204,7 +205,7 @@ class PopulatorSettings:
         self.only_put = args.only_put
         self.versioned_ids = args.versioned_ids
         self.persistence_dir = args.persistence_dir
-        self.persistate = args.persistate
+        self.persist = args.persist
         self.from_persistence = args.from_persistence
         self.log = log
         self.print_args(args)
@@ -269,7 +270,7 @@ class Populator:
             formatter_class=argparse.ArgumentDefaultsHelpFormatter
         )
         parser.add_argument(
-            "--endpoint", type=str, default="",
+            "--endpoint", type=str, default=None,
             help="The FHIR server REST endpoint"
         )
         parser.add_argument(
@@ -343,8 +344,8 @@ class Populator:
             help="If provided, the packages will be loaded from the persistence directory instead of being downloaded."
         )
         parser.add_argument(
-            "--persistate", action="store_true",
-            help="If provided, the files downloaded will be persistated."
+            "--persist", action="store_true",
+            help="If provided, the files downloaded will be persisted."
         )
         return parser.parse_args()
 
@@ -442,34 +443,7 @@ class Populator:
         self.log.debug(f"Latest version: {last_version}")
         return last_version
 
-    def persistate(self, dependency_graph):
-        def copy_directory_structure(src, dst):
-            """
-            Recursively creates directories from src to dst
-            """
-            for root, dirs, files in os.walk(src):
-                for directory in dirs:
-                    src_dir = os.path.join(root, directory)
-                    dst_dir = os.path.join(dst, os.path.relpath(src_dir, src))
-                    if not os.path.exists(dst_dir):
-                        os.makedirs(dst_dir)
-
-        def copy_files_with_structure(src, dst):
-            """
-            Copies files along with the directory structure from src to dst
-            """
-            copy_directory_structure(src, dst)
-            for root, dirs, files in os.walk(src):
-                for file in files:
-                    src_file = os.path.join(root, file)
-                    dst_file = os.path.join(dst, os.path.relpath(src_file, src))
-                    shutil.copy2(src_file, dst_file)
-
-        persistence_dir = self.args.persistence_dir
-        # copy files to persistence_dir from extract_dir
-        copy_files_with_structure(self.extract_dir, persistence_dir)
-
-        # update the dependency graph with the new paths
+    def remove_extract_dir_from_dependency_graph_paths(self, dependency_graph):
         for node in dependency_graph.nodes:
             node_path = dependency_graph.nodes[node]["path"]
             node_path = node_path.replace(self.extract_dir, "")
@@ -480,43 +454,87 @@ class Populator:
                 node_path = node_path[2:]
             dependency_graph.nodes[node]["path"] = node_path
 
-        # dump the dependency graph to a file in persistence_dir
-        if persistence_dir is not None:
-            graph_path = os.path.join(persistence_dir, "dependency_graph.json")
-            with open(graph_path, "w") as graph_fs:
-                json.dump(nx.node_link_data(dependency_graph), graph_fs)
+    @staticmethod
+    def save_dependency_graph(dependency_graph: nx.DiGraph, persistence_graph_path: str):
+        dependency_graph_json = nx.node_link_data(dependency_graph)
+        with open(persistence_graph_path, "w", encoding="utf-8") as persistence_graph_file:
+            json.dump(dependency_graph_json, persistence_graph_file)
+
+    def update_dependency_graph(self, persistence_graph_path, dependency_graph) -> nx.DiGraph:
+        with open(persistence_graph_path, "r", encoding="utf-8") as persistence_graph_file:
+            persistence_graph_json = json.load(persistence_graph_file)
+            persistence_graph = nx.node_link_graph(persistence_graph_json)
+            dependency_graph = nx.compose(dependency_graph, persistence_graph)
+            self.save_dependency_graph(dependency_graph, persistence_graph_path)
+
+    def persist(self, dependency_graph):
+        shutil.copytree(self.extract_dir, self.args.persistence_dir, dirs_exist_ok=True)
+
+        self.remove_extract_dir_from_dependency_graph_paths(dependency_graph)
+
+        persistence_graph_path = os.path.join(self.args.persistence_dir, "dependency_graph.json")
+        if os.path.exists(persistence_graph_path):
+            self.update_dependency_graph(persistence_graph_path, dependency_graph)
+        else:
+            self.save_dependency_graph(dependency_graph, persistence_graph_path)
+
+    def reduce_dependency_graph_by_package(self, dependency_graph: nx.DiGraph):
+        nodes_to_include = set(self.args.packages)
+        for package in self.args.packages:
+            # add all descendants of the package to the set of nodes to include
+            if self.args.get_dependencies:
+                nodes_to_include.update(nx.ancestors(dependency_graph, package))
+            nodes_to_include.add(package)
+        # create a subgraph of the dependency graph containing only the specified nodes
+        return dependency_graph.subgraph(nodes_to_include)
+
+    def add_persistence_dir_to_dependency_graph_paths(self, dependency_graph):
+        for node in dependency_graph.nodes:
+            node_path = dependency_graph.nodes[node]["path"]
+            node_path = os.path.join(self.args.persistence_dir, node_path)
+            dependency_graph.nodes[node]["path"] = node_path
+
+    @staticmethod
+    def load_dependency_graph(dependency_graph_path: str) -> nx.DiGraph:
+        with open(dependency_graph_path, "r", encoding="utf-8") as dependency_graph_file:
+            dependency_graph_json = json.load(dependency_graph_file)
+            dependency_graph = nx.node_link_graph(dependency_graph_json)
+            return dependency_graph
 
     def load_persisted(self):
         persistence_dir = self.args.persistence_dir
         graph_path = os.path.join(persistence_dir, "dependency_graph.json")
-        with open(graph_path, "r") as graph_fs:
-            dependency_graph = nx.node_link_graph(json.load(graph_fs))
-            # update the dependency graph with the new paths
-            for node in dependency_graph.nodes:
-                node_path = dependency_graph.nodes[node]["path"]
-                node_path = os.path.join(persistence_dir, node_path)
-                dependency_graph.nodes[node]["path"] = node_path
+        dependency_graph = self.load_dependency_graph(graph_path)
+        if not dependency_graph:
+            self.log.error(f"Failed to load dependency graph from {graph_path}")
+            exit(1)
+        self.args.packages = self.resolve_latest_persisted_package_version(self.args.packages, dependency_graph)
+        dependency_graph = self.reduce_dependency_graph_by_package(dependency_graph)
+        self.add_persistence_dir_to_dependency_graph_paths(dependency_graph)
         return dependency_graph
 
     def populate(self) -> None:
         packages = None
-        if self.args.packages:
-            packages = self.resolve_package_versions()
         dependency_graph = None
-        if packages and not self.args.from_persistence:
-            dependency_graph = self.download_packages(packages)
-            if self.args.persistate:
-                self.persistate(dependency_graph)
-        if self.args.from_persistence:
+        if not self.args.from_persistence:
+            if self.args.packages:
+                packages = self.resolve_package_versions()
+            if packages:
+                dependency_graph = self.download_packages(packages)
+                if self.args.persist:
+                    self.persist(dependency_graph)
+                    self.log.info(f"Persisted to {self.args.persistence_dir}")
+        else:
             if self.args.persistence_dir is None:
                 self.log.error("Cannot load persisted data without a persistence directory")
                 exit(1)
             dependency_graph = self.load_persisted()
-        if dependency_graph is None:
-            self.log.error("No dependency graph was generated")
-            exit(1)
-        self.upload_resources(dependency_graph)
-        self.log.info("UPLOAD COMPLETE")
+            for node in sorted(list(dependency_graph.nodes)):
+                print(node)
+            self.log.info(f"Loaded persisted data from {self.args.persistence_dir}")
+        if self.args.endpoint:
+            self.upload_resources(dependency_graph)
+            self.log.info("UPLOAD COMPLETE")
 
     # noinspection PyArgumentList
     @staticmethod
@@ -710,6 +728,44 @@ class Populator:
         for package_name, package_version in package_dependencies.items():
             dependencies.append(f"{package_name}@{package_version}")
         return dependencies
+
+    @staticmethod
+    def get_latest_package_version_in_dependency_graph(package: str, dependency_graph: nx.Graph) -> Optional[str]:
+        """
+        get the latest version of the package in the dependency graph
+        :param package: package without version
+        :param dependency_graph: containing the persisted package dependencies
+        :return: the latest version of the package in the dependency graph if it exists, otherwise None
+        """
+        nodes = [n for n in list(dependency_graph.nodes) if package in n]
+        if len(nodes) == 0:
+            return None
+        versions = [n.split("@")[1] for n in nodes]
+        versions.sort(key=semver.VersionInfo.parse)
+        return package + "@" + versions[-1]
+
+    def resolve_latest_persisted_package_version(self, packages: List[str], dependency_graph: nx.Graph) -> List[str]:
+        """
+        packages in the dependency graph are versioned with semantic versioning 2.0.0. For each package without version,
+        we get the latest version from the dependency graph
+        :param packages: the list of packages
+        :param dependency_graph: the dependency graph
+        :return: returns the latest persisted package version
+        """
+        resolved_packages = set()
+        for package in packages:
+            if "@" in package:
+                resolved_packages.add(package)
+            else:
+                latest_version = self.get_latest_package_version_in_dependency_graph(package, dependency_graph)
+                if latest_version is not None:
+                    resolved_packages.add(latest_version)
+        if len(resolved_packages) != len(packages):
+            unresolved_packages = set(packages) - resolved_packages
+            self.log.error(f"The packages {unresolved_packages} could not be resolved to a version in the "
+                           "dependency graph. Please check if the packages are persisted in the dependency graph.")
+            exit(1)
+        return resolved_packages
 
     def resolve_package_versions(self) -> List[str]:
         """
