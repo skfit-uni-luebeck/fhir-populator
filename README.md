@@ -45,6 +45,7 @@ usage: fhir_populator [-h] --endpoint ENDPOINT [--authorization-header AUTHORIZA
                       [--log-level {INFO,WARNING,DEBUG,ERROR}] [--rewrite-versions] [--only-put] [--versioned-ids]
                       [--exclude-resource-type [EXCLUDE_RESOURCE_TYPE ...] | --only [ONLY ...]]
                       [--registry-url REGISTRY_URL] [--package PACKAGES [PACKAGES ...]]
+                      [--persist] [--from-persistence] [--persistence-dir PERSISTANCE_DIR]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -75,6 +76,9 @@ optional arguments:
                         Specification for the package to download and push to the FHIR server. You can specify more
                         than one package. Use the syntax 'package@version', or leave out the version to use the
                         latest package available on the registry. (default: None)
+  --persist          if provided the package will be persisted in the persist-dir
+  --persistence-dir      directory where the persisted packages will be stored or loaded from
+  --from-persistence     if provided the package will be loaded from the persistence-dir                      
 ```
 
 There are a lot of command line options that can be used to customize the behaviour of the program.
@@ -122,6 +126,9 @@ There are a number of configuration options, which are (hopefully) mostly self-e
 * `--registry-url`: While the script was only tested using the Simplifier registry, it should be compatible to other implementations of the [FHIR NPM Package Spec](https://wiki.hl7.org/FHIR_NPM_Package_Spec), which is implemented by the Simplifier software. You can provide the endpoint of an alternative registry hence.
 * `--rewrite-versions`: If provided, all `version` attributes of the resources will be rewritten to match the version in the `package.json`, to separate these definitions from previous versions. You will need to think about the versions numbers you use when communicating with others, who might not use the same versions - ⚠️  use with caution! ⚠️
 * `--versioned-ids`: To separate versions of the resources on the same FHIR server, you can override the IDs provided in the resources, by including the slugified version of the package in the ID. If combined with the `--only-put` switch, this will work the same, versioning existing IDs, and slugifying + versioning the filename of resources without IDs.
+* `--persist`: If provided, the downloaded packages will be persisted in the `--persistence-dir` directory.
+* `--persistence-dir`: The directory where the persisted packages will be stored or loaded from.
+* `--from-persistence`: If provided, the package will be loaded from the `--persistence-dir` directory.
 
 ## Proxy:
 
