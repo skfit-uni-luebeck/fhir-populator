@@ -136,7 +136,7 @@ There are a number of configuration options, which are (hopefully) mostly self-e
 * `--https-proxy`: URL for HTTPS requests, if not provided, the HTTP proxy is used instead
 * `--proxy-for-fhir`: If provided, the proxy is also used for requests to your FHIR server
 * `--proxy-verify`: If provided, this public key (-chain) on your disk is used for validating the re-encrypted traffic to your proxy
-* `--proxy-for-fhir`: If provided, the proxy is also used for FHIR requests, not only for NPM requests
+* `--proxy-for-fhir`: If provided, the proxy is also used for FHIR requests, not only for NPM requests`
 
 ## Updating
 
@@ -165,3 +165,4 @@ If you want to customize the program, you should:
 | v1.1.0  | 2021-06-08 | - handle Unicode filenames, especially on BSD/macOS (#1)<br>- do not serialize null ID for POST (#2)<br>- include option for only certain resource types(#6)<br>- fix XML handling (#6)<br>- add LICENSE |
 | v1.1.1  | 2021-06-09 | - explicitly open files with UTF-8 encoding (#12)<br>- ignore pycharm and vscode (#11)|
 | v1.2.0  | 2022-12-13 | - support HTTP/HTTPS proxies |
+| v1.3.0 | 2023-04-03 | - support using a persistence directory |
