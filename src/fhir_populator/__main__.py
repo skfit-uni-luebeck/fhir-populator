@@ -1,4 +1,7 @@
 from fhir_populator.populator import Populator
 
-if __name__ == '__main__':
+def main():
     Populator().populate()
+
+if __name__ == '__main__':
+    main()
